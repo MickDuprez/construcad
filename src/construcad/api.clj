@@ -1,0 +1,67 @@
+(ns construcad.api
+  "EDN over HTTP, plus a websocket per open viewer for pushed patches.
+
+    GET  /api/buildings                         building list
+    GET  /api/buildings/:id/view?level=<uuid>   grid, levels, instructions
+    POST /api/buildings/:id/edits               one source edit -> upsert patch
+    GET  /api/buildings/:id/ws                  patches from everyone's edits
+
+  The browser only ever sends source edits (construcad.edits); geometry
+  only travels from server to browser."
+  (:require [clojure.edn :as edn]
+            [clojure.tools.logging :as log]
+            [com.biffweb :as biff]
+            [construcad.store :as store]
+            [ring.websocket :as ws]))
+
+(defn- edn-response
+  ([body] (edn-response 200 body))
+  ([status body]
+   {:status status
+    :headers {"content-type" "application/edn; charset=utf-8"}
+    :body (pr-str body)}))
+
+(defn- path-uuid [ctx k]
+  (some-> (get-in ctx [:path-params k]) parse-uuid))
+
+(defn- read-body [{:keys [body-params body]}]
+  (or body-params (some-> body slurp edn/read-string)))
+
+(defn buildings [{:keys [biff/db]}]
+  (edn-response (vec (store/buildings db))))
+
+(defn view [ctx]
+  (let [building-id (path-uuid ctx :id)
+        level-id (some-> (get-in ctx [:params "level"]) parse-uuid)]
+    (if-let [v (store/level-view ctx building-id level-id)]
+      (edn-response v)
+      (edn-response 404 {:error {:error/type :edit/unknown-building}}))))
+
+(defn- broadcast! [{:keys [construcad/viewers]} building-id patch except]
+  (doseq [socket (get @viewers building-id) :when (not= socket except)]
+    (try (ws/send socket (pr-str {:patch patch}))
+         (catch Exception e (log/warn e "Dropping viewer socket")))))
+
+(defn edit [ctx]
+  (let [building-id (path-uuid ctx :id)
+        {:keys [edit]} (read-body ctx)
+        result (store/apply-edit! (biff/merge-context ctx) building-id edit)]
+    (if (:error result)
+      (edn-response 422 result)
+      (do (broadcast! ctx building-id result nil)
+          (edn-response {:patch result})))))
+
+(defn socket [{:keys [construcad/viewers] :as ctx}]
+  (let [building-id (path-uuid ctx :id)]
+    {:status 101
+     :headers {"upgrade" "websocket" "connection" "upgrade"}
+     ::ws/listener {:on-open (fn [s] (swap! viewers update building-id (fnil conj #{}) s))
+                    :on-message (fn [_ _])
+                    :on-close (fn [s _ _] (swap! viewers update building-id disj s))}}))
+
+(def module
+  {:api-routes [["/api"
+                 ["/buildings" {:get buildings}]
+                 ["/buildings/:id/view" {:get view}]
+                 ["/buildings/:id/edits" {:post edit}]
+                 ["/buildings/:id/ws" {:get socket}]]]})

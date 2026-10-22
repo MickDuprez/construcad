@@ -1,0 +1,38 @@
+;; See https://github.com/juxt/aero and https://biffweb.com/docs/api/utilities/#use-aero-config.
+;; #biff/env and #biff/secret load values from the environment and from config.env.
+{:biff/base-url #profile {:prod #join ["https://" #biff/env DOMAIN]
+                          :default #join ["http://localhost:" #ref [:biff/port]]}
+ :biff/host     #or [#biff/env "HOST"
+                     #profile {:dev "0.0.0.0"
+                               :default "localhost"}]
+ :biff/port     #long #or [#biff/env "PORT" 8080]
+
+ ;; XTDB 1, local RocksDB storage under storage/xtdb (standalone topology).
+ :biff.xtdb/dir          "storage/xtdb"
+ :biff.xtdb/topology     #keyword #or [#profile {:prod #biff/env "PROD_XTDB_TOPOLOGY"
+                                                 :default #biff/env "XTDB_TOPOLOGY"}
+                                       "standalone"]
+ :biff.xtdb.jdbc/jdbcUrl #biff/secret "XTDB_JDBC_URL"
+
+ :biff.beholder/enabled         #profile {:dev true :default false}
+ :biff.beholder/paths           ["src" "resources" "test"]
+ :biff.add-libs/aliases         #profile {:dev [:dev] :prod [:prod]}
+ :biff/eval-paths               ["src" "test"]
+ :biff.middleware/secure        #profile {:dev false :default true}
+ :biff.middleware/cookie-secret #biff/secret COOKIE_SECRET
+ :biff/jwt-secret               #biff/secret JWT_SECRET
+ :biff.refresh/enabled          #profile {:dev true :default false}
+
+ :biff.nrepl/port #or [#biff/env NREPL_PORT "7888"]
+ :biff.nrepl/args ["--port" #ref [:biff.nrepl/port]
+                   "--middleware" "[cider.nrepl/cider-middleware,refactor-nrepl.middleware/wrap-refactor]"]
+
+ :biff.system-properties/user.timezone                 "UTC"
+ :biff.system-properties/clojure.tools.logging.factory "clojure.tools.logging.impl/slf4j-factory"
+
+ :biff.tasks/server             #biff/env DOMAIN
+ :biff.tasks/main-ns            construcad
+ :biff.tasks/on-soft-deploy     "\"(construcad/on-save @construcad/system)\""
+ :biff.tasks/generate-assets-fn construcad/generate-assets!
+ :biff.tasks/css-output         "target/resources/public/css/main.css"
+ :biff.tasks/watch-dirs         ["src" "dev" "resources" "test"]}

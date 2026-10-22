@@ -4,3 +4,9 @@ node_modules/
 target/
 .clj-kondo/.cache/
 .lsp/
+/config.env
+/storage/
+/.nrepl-port
+/bin
+.calva/
+.portal/
