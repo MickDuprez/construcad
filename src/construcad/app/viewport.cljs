@@ -88,7 +88,9 @@
      (.copy (.-position camera) eye)
      (.set (.-up camera) 0 0 1)
      (when (and (zero? dx) (zero? dy)) (.set (.-up camera) 0 1 0))
-     (set! (.-near camera) (- (* 10 span)))
+     ;; The eye sits 2 spans out; a positive near plane keeps the pick ray's
+     ;; origin in front of everything (three.js starts it at the near plane).
+     (set! (.-near camera) 1)
      (set! (.-far camera) (* 10 span))
      (set! (.-zoom camera) 1)
      (set-frustum! camera (* 0.42 span))

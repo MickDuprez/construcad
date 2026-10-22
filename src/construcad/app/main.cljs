@@ -102,6 +102,8 @@
                                (assoc :errors errors))
                      grid (assoc :grid grid)
                      levels (assoc :levels levels))))
+    ;; snap points may have moved with the patch
+    (swap! state* assoc :snap nil)
     (when (:selected @state*) (highlight! (:selected @state*) true))
     (vp/refresh-display!)
     (when (or grid levels) (draw-grid!))
@@ -465,6 +467,9 @@
     (.addEventListener canvas "pointerdown" on-pointer-down)
     (.addEventListener canvas "pointermove" on-pointer-move)
     (.addEventListener canvas "pointerup" on-pointer-up)
+    ;; A release outside the canvas, or a lost capture, still ends a drag.
+    (.addEventListener js/window "pointerup" on-pointer-up)
+    (.addEventListener canvas "lostpointercapture" on-pointer-up)
     (.addEventListener js/document "keydown" on-key-down)
     (-> (fetch-edn "/api/buildings" {})
         (.then (fn [[_ buildings]]
