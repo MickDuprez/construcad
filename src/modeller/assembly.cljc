@@ -27,6 +27,7 @@
   A template is an ordered list of actions, each a map with :action/type."
   (:require [modeller.frame :as frame]
             [modeller.instr :as instr]
+            [modeller.model :as model]
             [modeller.profile :as profile]
             [modeller.profile-builder :as builder]
             [modeller.vec :as v]))
@@ -129,9 +130,11 @@
                     (keep #(when (:id %) [(:id %) %]) built))
         owned (filter #(= id (:connection/owner %)) (vals (:connections model)))
         parts (reduce (fn [parts conn]
-                        (let [ctx (connection-context model resolved id xline conn)
-                              tpl (get-in model [:templates (:connection/template conn)])]
-                          (reduce #(apply-action ctx %2 %1) parts (:template/actions tpl))))
+                        (if-let [e (model/connection-error model conn)]
+                          (update parts ::errors conj e)
+                          (let [ctx (connection-context model resolved id xline conn)
+                                tpl (get-in model [:templates (:connection/template conn)])]
+                            (reduce #(apply-action ctx %2 %1) parts (:template/actions tpl)))))
                       parts owned)
         order (map :part/id (:assembly/parts xline))]
     {:instr (assoc (instr/transform frame

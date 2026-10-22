@@ -89,3 +89,14 @@
         (let [new (remove seen (deps id))]
           (recur (into seen new) (into (subvec queue 1) new)))
         seen))))
+
+(defn connection-error
+  "A connection is only valid where it physically is: the owner's end node
+  must sit at the end of, or along, the XLine it connects to. That shared
+  node is where every detailing dimension starts. nil when valid."
+  [{:keys [xlines]} {:connection/keys [id owner end refs]}]
+  (let [node (get-in xlines [owner (if (= :start end) :xline/start :xline/end)])
+        ref (first refs)]
+    (when-not (and ref (contains? (node/depends-on node) ref))
+      {:error/type :connection/node-not-on-ref
+       :connection/id id :xline/id owner :ref ref})))

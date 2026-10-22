@@ -96,3 +96,14 @@
                          [:plane :origin 2])]
         (is (v/nearly= 7838.0 (cut m)))
         (is (v/nearly= 7907.5 (cut (assoc-in m [:xlines :c-b1 :xline/rotation] 90))))))))
+
+(deftest connection-node-rule
+  (testing "a connection whose owner node is not on the referenced XLine is refused"
+    (let [m (assoc-in fx/model [:connections :b-1-end :connection/refs] [:c-b2])
+          {:keys [errors instructions]} (core/regenerate m)
+          beam (part (:b-1 instructions) :main)]
+      (is (= [:connection/node-not-on-ref] (map :error/type errors)))
+      (testing "and the beam keeps its full length at that end, cut only at the valid start"
+        (is (= :slice (:op beam)))
+        (is (not= :slice (get-in beam [:target :op])))))))
+
