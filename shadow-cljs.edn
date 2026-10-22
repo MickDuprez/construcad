@@ -1,0 +1,7 @@
+{:source-paths ["src" "test"]
+ :dependencies [[org.babashka/sci "0.15.58"]]
+ :builds
+ {:test {:target :node-test
+         :output-to "target/tests.js"
+         :ns-regexp "-test$"
+         :autorun true}}}
