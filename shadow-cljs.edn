@@ -1,7 +1,15 @@
 {:source-paths ["src" "test"]
  :dependencies [[org.babashka/sci "0.15.58"]]
  :builds
- {:test {:target :node-test
+ {;; The editor. Output lands on the classpath (target/resources/public),
+  ;; which the Biff server serves at /cljs.
+  :app {:target :browser
+        :output-dir "target/resources/public/cljs"
+        :asset-path "/cljs"
+        :modules {:main {:init-fn construcad.app.main/init!}}
+        :devtools {:after-load construcad.app.main/reload!}}
+
+  :test {:target :node-test
          :output-to "target/tests.js"
          :ns-regexp "-test$"
          :autorun true}}}
