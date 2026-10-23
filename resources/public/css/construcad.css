@@ -50,3 +50,63 @@ button.on { background: var(--accent); border-color: var(--accent); color: white
   .panel { order: 2; border-right: 0; border-top: 1px solid var(--line); }
   .command-bar { grid-template-columns: 1fr; grid-template-areas: "prompt" "input" "status"; }
 }
+
+/* template library and editors */
+.panel table.library td { padding: 2px 4px; }
+.panel td.tight { white-space: nowrap; text-align: right; }
+button.small, .buttons.small button { padding: 2px 7px; font-size: 12px; }
+.small { font-size: 11px; }
+.warn { color: var(--warn); }
+.grow { flex: 1; }
+
+.dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: none; align-items: stretch; justify-content: center;
+  background: rgba(29, 41, 53, .35); padding: 24px; }
+.dialog { display: flex; flex-direction: column; width: min(1280px, 100%); background: var(--panel);
+  border: 1px solid #b8c4cc; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.25); overflow: hidden; }
+.dialog header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.dialog header h2 { font-size: 15px; margin: 0; white-space: nowrap; }
+.dialog header input.name { font: inherit; font-size: 14px; padding: 4px 8px; width: 320px;
+  border: 1px solid #a8b6bf; border-radius: 4px; }
+.dialog h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  margin: 12px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.dialog .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
+.dialog select, .dialog input { font: inherit; }
+.dialog input[type=text], .dialog input.num { padding: 2px 5px; border: 1px solid #a8b6bf; border-radius: 3px; }
+.dialog input.num { width: 90px; }
+.dialog-error { background: #fbe9e1; color: var(--warn); padding: 6px 14px; border-bottom: 1px solid #efc7b5; }
+.dialog-body { flex: 1; overflow: auto; padding: 4px 14px 14px; }
+.dialog-body.two-col { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(380px, 1.1fr); gap: 18px; }
+.dialog-body.two-col .col { display: flex; flex-direction: column; min-height: 0; }
+.dialog-body.assembly { display: grid; grid-template-columns: 340px 1fr; grid-template-areas: "main elev" "ends ends"; gap: 4px 18px; }
+.dialog-body.assembly .main-member { grid-area: main; }
+.dialog-body.assembly .elevation { grid-area: elev; display: flex; flex-direction: column; min-height: 420px; }
+.dialog-body.assembly .ends { grid-area: ends; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.mini-view { position: relative; flex: 1; min-height: 340px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.mini-view canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
+
+svg.end-on { width: 100%; height: 300px; background: #f7fafb; border: 1px solid var(--line); border-radius: 4px; }
+svg.end-on .axis { stroke: var(--accent); stroke-width: .5; vector-effect: non-scaling-stroke; stroke-dasharray: 6 4; }
+svg.end-on .section { fill: #c3ccd3; stroke: #1f2a33; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+svg.end-on .xline { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+svg.end-on .ipoint { fill: white; stroke: #324650; stroke-width: 1.2; vector-effect: non-scaling-stroke; cursor: pointer; }
+svg.end-on .ipoint:hover { fill: #9edfe4; }
+svg.end-on .ipoint.chosen { fill: var(--accent); stroke: var(--accent); }
+svg.end-on .dim { font-size: 0; }
+.placement th { text-align: left; color: var(--muted); font-weight: 600; padding: 3px 6px 3px 0; white-space: nowrap; }
+.placement td { padding: 2px 0; }
+
+.end-card { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px 10px; }
+.end-card h3 { margin-top: 10px; }
+table.params { width: 100%; border-collapse: collapse; margin-top: 6px; }
+table.params th { text-align: left; color: var(--muted); font-weight: 600; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+table.params td { padding: 2px 4px; }
+table.params td.resolved { font: 12px ui-monospace, monospace; }
+table.params input { width: 100%; }
+table.params input.pname { width: 120px; }
+table.params input.formula { font: 12px ui-monospace, monospace; color: #3b4f9a; }
+table.params tr.overridden td:first-child { font-weight: 600; color: var(--accent); }
+table.params tr.bad input { border-color: var(--warn); }
+ol.actions { margin: 0; padding-left: 20px; }
+ol.actions li { margin: 4px 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
+.action-head { display: flex; align-items: center; gap: 6px; }
+code { font: 12px ui-monospace, monospace; background: #eef2f4; padding: 0 3px; border-radius: 3px; }

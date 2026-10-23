@@ -5,10 +5,13 @@
   which every open viewer of the building also receives."
   (:require [cljs.reader :as reader]
             [clojure.string :as str]
+            [construcad.app.dom :refer [h]]
             [construcad.app.grid-view :as grid-view]
             [construcad.app.reader :as instr-reader]
+            [construcad.app.templates :as templates]
             [construcad.app.viewport :as vp]
-            [construcad.snap :as snap]))
+            [construcad.snap :as snap]
+            [construcad.template-edit :as te]))
 
 (defonce state*
   (atom {:buildings [] :building-id nil
@@ -17,7 +20,9 @@
          :filter-level nil  ; level id shown, nil = every level
          :active-level nil  ; level id the grid is drawn at and snaps to
          :tool :select
-         :selected nil
+         :selected nil      ; the assembly the grips and properties are for
+         :selection #{}     ; every selected assembly (Shift + click adds)
+         :apply {}          ; {:template-id :size} chosen in the panel
          :xline-start nil   ; first pick of the XLine tool
          :drag nil          ; grip being dragged
          :command nil       ; grip waiting for typed coordinates
@@ -27,21 +32,6 @@
 (defonce ui* (atom {}))
 
 (def snap-radius 14)
-
-;; --- small DOM helper ----------------------------------------------------------
-
-(defn h [tag attrs & children]
-  (let [el (.createElement js/document (name tag))]
-    (doseq [[k v] attrs :when (some? v)]
-      (let [k (name k)]
-        (cond
-          (str/starts-with? k "on-") (.addEventListener el (subs k 3) v)
-          (= k "class") (set! (.-className el) v)
-          (#{"value" "checked" "disabled" "selected"} k) (aset el k v)
-          :else (.setAttribute el k (str v)))))
-    (doseq [c (flatten children) :when (some? c)]
-      (.append el (if (string? c) c (if (number? c) (str c) c))))
-    el))
 
 (declare render-panel! load-view! update-overlays! prompt!)
 
@@ -75,13 +65,23 @@
                      "visible-edge" (.setHex (.. n -material -color) (if on? 0x007a99 (:edge instr-reader/colours)))
                      nil)))))
 
-(defn select! [id]
-  (let [old (:selected @state*)]
-    (when old (highlight! old false))
-    (swap! state* assoc :selected id :command nil)
-    (when id (highlight! id true))
-    (update-overlays!)
-    (render-panel!)))
+(defn select!
+  "Select one assembly (nil clears), or with `add?` toggle it in the selection."
+  ([id] (select! id false))
+  ([id add?]
+   (let [{old :selection} @state*
+         selection (cond
+                     (and add? id) (if (contains? old id) (disj old id) (conj old id))
+                     add? old
+                     id #{id}
+                     :else #{})]
+     (doseq [o old] (highlight! o false))
+     (doseq [o selection] (highlight! o true))
+     (swap! state* assoc :selection selection :command nil
+            :apply (if add? (:apply @state*) {})
+            :selected (if (contains? selection id) id (first selection)))
+     (update-overlays!)
+     (render-panel!))))
 
 (defn- draw-grid! []
   (grid-view/draw! (get-in @state* [:view :grid]) (:level/elevation (active-level) 0)))
@@ -89,7 +89,7 @@
 (defn apply-patch!
   "Upsert the affected assemblies this viewer shows (and new ones on its
   level), and take the grid and levels if the edit changed them."
-  [{:keys [upsert resolved xlines created grid levels errors]}]
+  [{:keys [upsert resolved xlines created grid levels errors] :as patch}]
   (let [{:keys [objects]} @state*
         shown? #(or (contains? objects %)
                     (and (some #{%} created) (level-shown? (get-in xlines [% :assembly/level]))))
@@ -102,15 +102,26 @@
                                (assoc :errors errors))
                      grid (assoc :grid grid)
                      levels (assoc :levels levels))))
+    (when-let [t (:templates patch)] (templates/templates-changed! t))
     ;; snap points may have moved with the patch
     (swap! state* assoc :snap nil)
-    (when (:selected @state*) (highlight! (:selected @state*) true))
+    (doseq [id (:selection @state*)] (highlight! id true))
     (vp/refresh-display!)
     (when (or grid levels) (draw-grid!))
     (update-overlays!)
     (render-panel!)))
 
-(defn send-edit! [edit]
+(declare mark)
+
+(defn- warning-text [{:keys [warning/type xline/id end] :as w}]
+  (case type
+    :template/end-not-on-xline (str (mark id) " " (name end) " is not on another XLine, so it has no connection")
+    (pr-str w)))
+
+(defn send-edit!
+  "Send one source edit; the patch comes back and is applied. Returns a
+  promise of true when the server took the edit."
+  [edit]
   (set-status! "Saving…")
   (-> (fetch-edn (str "/api/buildings/" (:building-id @state*) "/edits")
                  {:method "POST" :headers {"content-type" "application/edn"}
@@ -119,9 +130,22 @@
                (if (= 200 status)
                  (let [p (:patch body)]
                    (apply-patch! p)
-                   (set-status! (str "Saved; " (count (:upsert p)) " assemblies regenerated")))
-                 (set-status! (str "Refused: " (pr-str (:error body)))))))
-      (.catch #(set-status! (str "Edit failed: " %)))))
+                   (set-status! (str "Saved; " (count (:upsert p)) " assemblies regenerated"
+                                     (when-let [ws (seq (:warnings p))]
+                                       (str ". Warning: " (str/join "; " (map warning-text ws))))))
+                   true)
+                 (do (set-status! (str "Refused: " (pr-str (:error body))))
+                     false))))
+      (.catch #(do (set-status! (str "Edit failed: " %)) false))))
+
+(defn load-templates! []
+  (-> (fetch-edn (str "/api/buildings/" (:building-id @state*) "/templates") {})
+      (.then (fn [[status {:keys [templates sections]}]]
+               (when (= 200 status)
+                 (swap! templates/env* assoc :sections sections
+                        :save! #(send-edit! {:edit/type :template/save :template %}))
+                 (templates/templates-changed! templates)
+                 (render-panel!))))))
 
 (defn- connect-socket! [building-id]
   (when-let [old (:socket @ui*)] (set! (.-onclose old) nil) (.close old))
@@ -139,14 +163,17 @@
                         (when filter-level (str "?level=" filter-level))) {})
         (.then (fn [[_ v]]
                  (doseq [[_ o] (:objects @state*)] (instr-reader/dispose! o))
-                 (swap! state* assoc :objects {} :view v :drag nil :command nil :xline-start nil
-                        :selected (when (contains? (:xlines v) (:selected @state*)) (:selected @state*)))
+                 (swap! state* (fn [st]
+                                 (let [kept (set (filter (:xlines v) (:selection st)))]
+                                   (assoc st :objects {} :view v :drag nil :command nil :xline-start nil
+                                          :selection kept
+                                          :selected (when (kept (:selected st)) (:selected st))))))
                  (when-not (level (:active-level @state*))
                    (swap! state* assoc :active-level (:xt/id (last (:levels v)))))
                  (doseq [[id instr] (:instructions v)] (show-assembly! id instr))
                  (vp/refresh-display!)
                  (draw-grid!)
-                 (when-let [s (:selected @state*)] (highlight! s true))
+                 (doseq [id (:selection @state*)] (highlight! id true))
                  (when fit? (vp/look! [1 -1 1]))
                  (update-overlays!)
                  (render-panel!)
@@ -259,7 +286,7 @@
                       (swap! state* assoc :command nil
                              :drag {:id (:selected @state*) :end end :from cursor :moved? false}))
                   (let [s (vp/pick cursor)]
-                    (select! (some #(when (= (str %) s) %) (keys (:objects @state*))))))))
+                    (select! (some #(when (= (str %) s) %) (keys (:objects @state*))) (.-shiftKey e))))))
     (some-> (:input @ui*) .focus)))
 
 (defn on-pointer-move [^js e]
@@ -402,10 +429,50 @@
                   (h :tr {} (h :th {} "Start") (h :td {} (ref-text (:xline/start x))))
                   (h :tr {} (h :th {} "End") (h :td {} (ref-text (:xline/end x))))
                   (h :tr {} (h :th {} "Length") (h :td {} (str (js/Math.round (:length r 0)) " mm")))
+                  (h :tr {} (h :th {} "Template")
+                     (h :td {} (if-let [t (:assembly/template x)]
+                                 (h :a {:href "#" :on-click (fn [e] (.preventDefault e)
+                                                              (some-> (get-in @templates/env* [:templates t]) templates/open!))}
+                                    (or (templates/template-name t) "(unknown)"))
+                                 "—")))
+                  (h :tr {} (h :th {} "Size") (h :td {} (or (:assembly/size x) "—")))
                   (h :tr {} (h :th {} "Rotation")
                      (h :td {} (number-input (:xline/rotation x 0)
                                              #(send-edit! {:edit/type :xline/set-rotation
                                                            :xline/id selected :rotation %})))))))))
+
+(defn- apply-section
+  "Apply an assembly template at a size to every selected member."
+  []
+  (let [{:keys [selection selected view apply]} @state*
+        xs (keep #(get-in view [:xlines %]) selection)
+        role (:xline/role (get-in view [:xlines selected]))
+        candidates (sort-by #(if (= role (:template/role %)) 0 1) (templates/templates-of :assembly))
+        current (let [ts (set (map :assembly/template xs))] (when (= 1 (count ts)) (first ts)))
+        tid (or (:template-id apply) current (:template/id (first candidates)))
+        sizes (te/sizes-for-role (:sections @templates/env*)
+                                 (get-in @templates/env* [:templates tid :template/role] role))
+        size (or (:size apply) (some :assembly/size xs) (first sizes))]
+    (when (seq xs)
+      (section "Assembly template"
+               (h :p {:class "muted"} (str (count xs) " selected; Shift + click adds or removes members"))
+               (h :label {:class "row"} "Template "
+                  (h :select {:on-change (fn [e] (let [v (.. e -target -value)]
+                                                   (swap! state* assoc-in [:apply :template-id]
+                                                          (some #(when (= v (str (:template/id %))) (:template/id %)) candidates))
+                                                   (render-panel!)))}
+                     (for [t candidates]
+                       (h :option {:value (str (:template/id t)) :selected (= tid (:template/id t))}
+                          (:template/name t)))))
+               (h :label {:class "row"} "Size "
+                  (h :select {:on-change (fn [e] (swap! state* assoc-in [:apply :size] (.. e -target -value)))}
+                     (for [d sizes] (h :option {:value d :selected (= d size)} d))))
+               (h :div {:class "buttons"}
+                  (h :button {:class "on" :disabled (nil? tid)
+                              :on-click #(send-edit! {:edit/type :assembly/apply-template
+                                                      :xline/ids (vec (sort-by str selection))
+                                                      :template/id tid :size size})}
+                     "Apply"))))))
 
 (defn- messages-section []
   (let [errors (get-in @state* [:view :errors])]
@@ -436,6 +503,8 @@
                               :on-change #(vp/show-xlines! (.. % -target -checked))})
                    " Show XLines"))
        (selection-section)
+       (apply-section)
+       (templates/library-section)
        (levels-section)
        (grid-section)
        (messages-section)]))))))
@@ -476,6 +545,7 @@
                  (let [id (:xt/id (first buildings))]
                    (swap! state* assoc :buildings buildings :building-id id)
                    (connect-socket! id)
+                   (load-templates!)
                    (load-view! :fit? true)))))))
 
 (defn reload! []
