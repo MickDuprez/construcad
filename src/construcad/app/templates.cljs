@@ -460,10 +460,13 @@
   "The 3D preview of the member alone: main part, plates, bolts, holes and
   cuts as its connections made them, its XLine as a thin line with a ball at
   each node. Nothing it connects to is drawn."
-  [{:keys [instructions nodes]} note]
+  [{:keys [instructions nodes]} note & {:keys [length]}]
   (let [views (te/preview-views nodes)
-        host (preview-host! (second (first views)))]
-    (show-preview! instructions :nodes nodes)
+        host (preview-host! (second (first views)))
+        refit? (and length (not= length (get-in @ui* [:preview :length])))]
+    ;; a new sample length moves the end node: frame the member again
+    (when refit? (swap! ui* assoc-in [:preview :length] length))
+    (show-preview! instructions :nodes nodes :fit? refit?)
     (h :section {:class "member-preview"}
        (h :div {:class "row"}
           (h :h3 {} "3D preview")
@@ -473,8 +476,9 @@
        (h :p {:class "muted small"} note))))
 
 (defn- assembly-builder [{:keys [draft size error saving?] :as dlg}]
-  (let [{:keys [errors] :as preview} (te/assembly-preview @lib (:templates @env*) draft
-                                                          {:size size :support-size (:support-size dlg)})]
+  (let [length (te/preview-length @lib (:templates @env*) draft size (:support-size dlg))
+        {:keys [errors] :as preview} (te/assembly-preview @lib (:templates @env*) draft
+                                                          {:size size :support-size (:support-size dlg) :length length})]
     (h :div {:class "dialog assembly-builder"}
        (h :header {}
           (h :h2 {} (if (:template/id draft) "Assembly template" "New assembly template"))
@@ -489,14 +493,16 @@
           (h :button {:class "on" :disabled saving? :on-click save!} "Save"))
        (when error (h :div {:class "dialog-error"} error))
        (h :div {:class "dialog-body assembly"}
-          (main-member-section dlg size te/preview-length
+          (main-member-section dlg size length
                                (h :div {:class "row"} "Preview size "
                                   (size-select "size" size #(update-top! assoc :size %)
                                                (sizes-for (:template/role draft)))))
           (member-preview preview
-                          (str "The member alone, on a " (fmt te/preview-length) " mm XLine (the thin line, a ball at each node). "
+                          (str "The member alone, on a " (fmt length) " mm sample XLine (the thin line, a ball at each node), "
+                               "just long enough to keep its two end details apart. "
                                "An end with a connection is made against a " (:support-size dlg)
-                               " column, as in the connection editor, which isn't drawn."))
+                               " column, as in the connection editor, which isn't drawn.")
+                          :length length)
           (h :div {:class "ends"}
              (end-card :start dlg size)
              (end-card :end dlg size))

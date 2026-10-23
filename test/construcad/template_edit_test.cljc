@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [construcad.seed :as seed]
             [construcad.template-edit :as te]
+            [modeller.assembly :as assembly]
+            [modeller.instr :as instr]
             [modeller.library :as library]
             [modeller.sections-au :as au]
             [modeller.vec :as v]))
@@ -79,7 +81,7 @@
       (is (part member :plate-start))
       (is (part member :plate-end))
       (testing "the XLine's nodes, for the preview to mark"
-        (is (= [[0.0 0.0 3000.0] [3000.0 0.0 3000.0]] (mapv #(mapv double %) nodes))))))
+        (is (= [[0.0 0.0 3000.0] [1200.0 0.0 3000.0]] (mapv #(mapv double %) nodes))))))
   (testing "a plain end is left as it is"
     (let [{:keys [instructions]} (te/assembly-preview lib templates (dissoc (:beam-plates templates) :template/end)
                                                       {:size "250UB31.4"})]
@@ -89,6 +91,48 @@
     (let [{:keys [instructions errors]} (te/assembly-preview lib templates (:column templates) {:size "200UC46.2"})]
       (is (empty? errors))
       (is (= #{:member} (set (keys instructions)))))))
+
+;; A stand-in for a long end detail (a deep haunch, say): a box reaching
+;; :reach in from the member's node along its XLine.
+(defmethod assembly/apply-action ::long-detail [{:keys [params conn owner-length]} _ parts]
+  (let [reach (get params :reach 1500)
+        id (keyword (str "detail-" (name (:connection/end conn))))
+        z0 (if (= :start (:connection/end conn)) 0 (- owner-length reach))]
+    (assoc parts id (assoc (instr/transform {:o [0 0 z0] :x [1 0 0] :y [0 1 0] :z [0 0 1]}
+                                            (instr/box [100 100 reach]))
+                           :id id :part/kind :plate))))
+
+(deftest sample-lengths
+  (let [plain {:template/kind :assembly :template/name "Plain" :template/main te/default-main}
+        long-end {:template/id :long-end :template/kind :connection :template/name "Long"
+                  :template/params {:reach 1500} :template/actions [{:action/type ::long-detail}]}
+        templates (assoc templates :long-end long-end)]
+    (testing "plain ends: the shortest sample"
+      (is (= 1200 (te/preview-length lib templates plain "310UB40.4"))))
+    (testing "end plates on a 310UB reach a little way in from each node"
+      (let [{:keys [instructions]} (te/assembly-preview lib templates (:beam-plates templates)
+                                                        {:size "310UB40.4" :length 6000})
+            {:keys [start end]} (te/end-extents (:member instructions) 6000 :main)]
+        (is (< 50 start 300))
+        (is (< 50 end 300)))
+      (is (<= 1200 (te/preview-length lib templates (:beam-plates templates) "310UB40.4") 1300)))
+    (testing "a long end detail pushes the sample past it, keeping a clear gap"
+      (let [one (assoc plain :template/end {:connection/template :long-end})
+            both (assoc one :template/start {:connection/template :long-end})]
+        (is (= {:start 0.0 :end 1500.0}
+               (update-vals (te/end-extents (get-in (te/assembly-preview lib templates one {:size "310UB40.4" :length 8000})
+                                                    [:instructions :member])
+                                            8000 :main)
+                            double)))
+        (is (= 1900 (te/preview-length lib templates one "310UB40.4")))    ; 1500 + 304 deep
+        (is (= 3400 (te/preview-length lib templates both "310UB40.4")))
+        (testing "an override reaches further"
+          (is (= 2900 (te/preview-length lib templates
+                                         (assoc one :template/end {:connection/template :long-end
+                                                                   :connection/params {:reach 2500}})
+                                         "310UB40.4"))))
+        (testing "the preview is built on it"
+          (is (= 1900.0 (double (get-in (te/assembly-preview lib templates one {:size "310UB40.4"}) [:nodes 1 0])))))))))
 
 (deftest preview-view-directions
   (let [near3? (fn [a b] (every? true? (map #(v/nearly= %1 %2 1e-9) a b)))

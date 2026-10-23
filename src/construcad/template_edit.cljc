@@ -203,8 +203,6 @@
                                            :connection/refs [:support] :connection/template id}}))]
     (regenerated m {})))
 
-(def preview-length 3000)
-
 (defn- member-only
   "The member's own regeneration, nothing around it: its instruction (main
   part, plates, bolts, holes, cuts), its XLine's two nodes for the preview
@@ -218,15 +216,18 @@
      :errors errors
      :model m}))
 
+(declare preview-length)
+
 (defn assembly-preview
   "The draft assembly template applied at `size` to a member on an XLine of
-  `length`. An end with a connection sits on a sample support (a vertical
+  `length` (by default the template's preview-length). An end with a connection sits on a sample support (a vertical
   column of `support-size`, as the connection editor shows by default) so
   the connection is made, but only the member is returned: what the template
   does to the member itself. {:instructions {:member i} :nodes [start end]
   :errors :model}."
-  [lib templates draft {:keys [size support-size length] :or {length preview-length support-size "200UC46.2"}}]
-  (let [id (or (:template/id draft) :preview/draft)
+  [lib templates draft {:keys [size support-size length] :or {support-size "200UC46.2"}}]
+  (let [length (or length (preview-length lib templates draft size support-size))
+        id (or (:template/id draft) :preview/draft)
         draft (assoc draft :template/id id)
         z column-height
         node (fn [end x]
@@ -240,6 +241,91 @@
     (if (:error r)
       {:instructions {} :nodes [] :errors [(:error r)] :model m}
       (member-only (:model r) :member))))
+
+;; --- sample length -------------------------------------------------------------------
+
+(defn- bbox
+  "Axis-aligned bounds of an instruction in its parent space,
+  {:min [x y z] :max [x y z]}, or nil when it has no solid. Cut and
+  subtracted solids are bounded by their target."
+  [instr]
+  (let [merge-boxes (fn [boxes]
+                      (when-let [bs (seq (remove nil? boxes))]
+                        {:min (apply mapv min (map :min bs)) :max (apply mapv max (map :max bs))}))]
+    (case (:op instr)
+      :extrude (let [{[x0 y0] :min [x1 y1] :max} (profile/bounds (:profile instr))]
+                 {:min [x0 y0 0] :max [x1 y1 (:length instr)]})
+      :box (let [[sx sy sz] (:size instr)] {:min [(/ sx -2) (/ sy -2) 0] :max [(/ sx 2) (/ sy 2) sz]})
+      :cylinder (let [r (:radius instr)] {:min [(- r) (- r) 0] :max [r r (:length instr)]})
+      :transform (when-let [{[x0 y0 z0] :min [x1 y1 z1] :max} (bbox (:child instr))]
+                   (let [ps (for [x [x0 x1] y [y0 y1] z [z0 z1]] (frame/point->parent (:frame instr) [x y z]))]
+                     {:min (apply mapv min ps) :max (apply mapv max ps)}))
+      (:slice :subtract) (bbox (:target instr))
+      :group (merge-boxes (map bbox (:children instr)))
+      (:union :intersect) (merge-boxes (map bbox (:solids instr)))
+      nil)))
+
+(defn- cut-spans
+  "Z ranges ([z0 z1]) of the cuts wrapped round a part: each slice plane where
+  it crosses the bounds of what it cuts, each subtracted tool within them."
+  [instr]
+  (case (:op instr)
+    :slice (let [{[x0 y0 tz0] :min [x1 y1 tz1] :max :as b} (bbox (:target instr))
+                 {[ox oy oz] :origin [nx ny nz] :normal} (:plane instr)]
+             (cond-> (cut-spans (:target instr))
+               (and b (> (abs nz) 1e-9))
+               (conj (let [zs (for [x [x0 x1] y [y0 y1]]
+                                (-> (- oz (/ (+ (* nx (- x ox)) (* ny (- y oy))) nz)) (max tz0) (min tz1)))]
+                       [(apply min zs) (apply max zs)]))))
+    :subtract (let [b (bbox (:target instr))]
+                (into (cut-spans (:target instr))
+                      (for [t (:tools instr) :let [{[_ _ z0] :min [_ _ z1] :max} (bbox t)] :when (and b z0)]
+                        [(max z0 (get-in b [:min 2])) (min z1 (get-in b [:max 2]))])))
+    []))
+
+(def ^:private trial-length
+  "The XLine a template is first built on to measure its ends: long enough
+  that no end detail reaches the middle."
+  20000)
+
+(defn end-extents
+  "How far each end's detail reaches in along the XLine from its node, for
+  the member's instruction `instr` on an XLine of `length`, the main part
+  being `main-id`: the connection parts (plates, bolts...) and the cuts and
+  set-backs on the main part, each counted at the nearer end. Read from the
+  bounds in the XLine's local Z. {:start mm :end mm}."
+  [instr length main-id]
+  (let [half (/ length 2.0)
+        spans (for [p (get-in instr [:child :children])
+                    :when (not= :xline (:op p))
+                    span (if (= main-id (:id p))
+                           (let [{[_ _ z0] :min [_ _ z1] :max} (bbox p)]
+                             (cond-> (cut-spans p)
+                               (and z0 (pos? z0)) (conj [z0 z0])
+                               (and z1 (< z1 length)) (conj [z1 z1])))
+                           (when-let [{[_ _ z0] :min [_ _ z1] :max} (bbox p)] [[z0 z1]]))]
+                span)
+        reach (fn [end] (reduce max 0 (for [[z0 z1] spans
+                                             :let [start? (< (/ (+ z0 z1) 2.0) half)]
+                                             :when (= start? (= :start end))]
+                                         (if start? z1 (- length z0)))))]
+    {:start (reach :start) :end (reach :end)}))
+
+(defn preview-length
+  "The sample XLine length for previewing assembly template `draft` at
+  `size`: short, so the end details read, but long enough to keep both of
+  them, built against `support-size` columns, apart. At least 1200 mm, else
+  both ends' reach plus a clear gap of the section depth (300 at least),
+  rounded up to the next 100 mm."
+  ([lib templates draft size] (preview-length lib templates draft size "200UC46.2"))
+  ([lib templates draft size support-size]
+   (let [{:keys [instructions]} (assembly-preview lib templates draft
+                                                  {:size size :support-size support-size :length trial-length})
+         {:keys [start end]} (if-let [i (:member instructions)]
+                               (end-extents i trial-length :main)
+                               {:start 0 :end 0})
+         gap (max 300 (or (:d (section-data lib size)) 0))]
+     (max 1200 (* 100 (long (Math/ceil (- (/ (+ start end gap) 100.0) 1e-9))))))))
 
 (defn instance-preview
   "One assembly as the assembly page would save it: `state` applied to
