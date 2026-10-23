@@ -184,11 +184,15 @@
                                         :template/main {:part/insert :top-centre}
                                         :template/start {:connection/template ep}}})]
         (is (= [[:template id]] (:writes p)))))
-    (testing "refused: unknown action or missing connection template"
+    (testing "refused: unknown action, another project's template id, missing connection template"
       (is (= :unknown-action
              (get-in (edits/plan m {:edit/type :template/save
                                     :template {:template/kind :connection :template/name "x"
                                                :template/actions [{:action/type :weld-everything}]}})
+                     [:error :reason])))
+      (is (= :unknown-template
+             (get-in (edits/plan m {:edit/type :template/save
+                                    :template (assoc (get-in m [:templates ep]) :template/id (random-uuid))})
                      [:error :reason])))
       (is (= :unknown-connection-template
              (get-in (edits/plan m {:edit/type :template/save

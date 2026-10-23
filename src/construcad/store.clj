@@ -54,6 +54,19 @@
            :building (select-keys building [:xt/id :building/name])
            :level-id level-id)))
 
+(defn templates
+  "The project's template library, and the section designations a template
+  can be applied at (for size pickers), or nil for an unknown building."
+  [{:keys [construcad/library] :as ctx} building-id]
+  (when-let [{:keys [model]} (building-model ctx building-id)]
+    {:templates (:templates model)
+     :sections (->> (vals (:sections library))
+                    (remove :section/error)
+                    (map #(-> (select-keys % [:section/designation :section/builder])
+                              (assoc :mass (get-in % [:section/data :mass]))))
+                    (sort-by (juxt :section/builder (comp - (fnil identity 0) :mass)))
+                    vec)}))
+
 (defn apply-edit!
   "Validate an edit, save what it writes in one transaction, and return the
   upsert patch, or {:error e}. New XLines get their id here, never from the

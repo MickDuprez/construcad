@@ -3,6 +3,7 @@
 
     GET  /api/buildings                         building list
     GET  /api/buildings/:id/view?level=<uuid>   grid, levels, instructions
+    GET  /api/buildings/:id/templates           template library + section designations
     POST /api/buildings/:id/edits               one source edit -> upsert patch
     GET  /api/buildings/:id/ws                  patches from everyone's edits
 
@@ -37,6 +38,11 @@
       (edn-response v)
       (edn-response 404 {:error {:error/type :edit/unknown-building}}))))
 
+(defn templates [ctx]
+  (if-let [t (store/templates ctx (path-uuid ctx :id))]
+    (edn-response t)
+    (edn-response 404 {:error {:error/type :edit/unknown-building}})))
+
 (defn- broadcast! [{:keys [construcad/viewers]} building-id patch except]
   (doseq [socket (get @viewers building-id) :when (not= socket except)]
     (try (ws/send socket (pr-str {:patch patch}))
@@ -63,5 +69,6 @@
   {:api-routes [["/api"
                  ["/buildings" {:get buildings}]
                  ["/buildings/:id/view" {:get view}]
+                 ["/buildings/:id/templates" {:get templates}]
                  ["/buildings/:id/edits" {:post edit}]
                  ["/buildings/:id/ws" {:get socket}]]]})

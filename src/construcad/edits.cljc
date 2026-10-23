@@ -233,9 +233,13 @@
 
 (defmethod plan* :template/save [m {t :template new-id :new-id}]
   (let [new-id (or new-id random-uuid)
-        t (cond-> t (nil? (:template/id t)) (assoc :template/id (new-id)))
+        given (:template/id t)
+        t (cond-> t (and (map? t) (nil? given)) (assoc :template/id (new-id)))
         id (:template/id t)]
-    (if-let [e (template-error m t)]
+    (if-let [e (or (when-not (map? t) {:reason :not-a-map})
+                   ;; an id the browser sends must be one of this project's templates
+                   (when (and given (not (contains? (:templates m) given))) {:reason :unknown-template})
+                   (template-error m t))]
       (error :edit/bad-template :reason (:reason e))
       (let [m' (assoc-in m [:templates id] t)]
         (case (:template/kind t)
