@@ -21,8 +21,33 @@ XTDB 1 keeps its data in `storage/xtdb`. An empty database is seeded with
 the demo bay (four columns, two beams with square-cut connections, a tilt
 panel). Stop the server and delete `storage/` to start again from the seed.
 
-In the editor:
+In the editor: a toolbar across the top, the navigator on the left, the
+model in the middle and the properties of the selected assembly on the right.
 
+- **Navigator** (left): **Project** and **Building** pickers load a building
+  (`GET /api/projects` lists every project with its buildings; there are no
+  accounts yet, so every project is listed), a **Level** filter ("All
+  levels" by default) and a search box (mark or size). Below them the tree:
+  building > level > role (Columns, Beams, Rafters...) > assembly mark, its
+  size shown faintly. An assembly is listed under the level its start node
+  is at or nearest below (`construcad.navigator`). The Level filter filters
+  the tree and hides the other levels' assemblies in the model (hidden ones
+  can't be picked). Click an assembly to select it (Shift + click adds or
+  removes); selecting one in the model opens the tree down to it and
+  highlights it. **Double-click** it, or right-click > **Edit assembly**,
+  to open its assembly page.
+- **Properties** (right, collapsible with **›**): mark, role, size, level,
+  length, template (or "edited by hand, from" one), **Edit assembly**, each
+  end's connection template and what it sits on with **Edit start/end
+  connection** (opens the connection editor on that template, previewed at
+  this member's size against its support's, as a column or a beam as the
+  support's role says), and the parts list (main member, each end's plate
+  and bolts with sizes and counts). The ends come from the assembly's page
+  data, fetched when it is selected. **Apply a template** for the selection
+  sits below.
+- **Toolbar**: Select and XLine tools, the role new XLines get, display mode,
+  XLines on/off, zoom extents, and **Levels & grid** and **Templates**, which
+  open over the model.
 - Middle or right drag pans, Shift + middle/right drag orbits, the wheel
   zooms at the cursor. The view cube sets standard views and orbits when
   dragged.
@@ -37,12 +62,11 @@ In the editor:
   then click a start and an end (same snaps), or type coordinates;
   `@dx,dy,dz` for the end is relative to the start. The member always gets
   the picked role, whichever way it runs. The grid is drawn, and grid
-  snaps sit, at the working level ticked in the Levels panel. Esc cancels.
-- **Right-click** a member (or **Edit…** under Selection) for **Edit
-  assembly**: the assembly page for that member (see Templates). The side
-  panel keeps a short summary: mark, role, size, template.
-- Level elevations, grid axis offsets and grid label styles are edited in
-  the side panel.
+  snaps sit, at the working level ticked under **Levels & grid**. Esc cancels.
+- **Right-click** a member in the model for **Edit assembly**: the assembly
+  page for that member (see Templates).
+- Level elevations, grid axis offsets and grid label styles are edited under
+  **Levels & grid**.
 
 ## Templates
 
@@ -57,7 +81,7 @@ member's data, e.g. `(:tf support)`) and the other numeric parameters, e.g.
 `:plate-h "(+ d 20)"`. A new project starts with a small library (square cut,
 end plate with four bolts, and beams and a column built from them).
 
-- The side panel's **Templates** section lists both kinds: **Edit**, **Copy**
+- The toolbar's **Templates** lists both kinds: **Edit**, **Copy**
   (saves as a new template), **New assembly**, **New connection**.
 - The **assembly page** edits an assembly template. It shows the main
   member on its XLine and nothing else. Its one **Assembly** view, in 3D,
@@ -68,12 +92,13 @@ end plate with four bolts, and beams and a column built from them).
   at the web, start on the left); drag to orbit, pan and zoom, and **Iso**,
   **Plan**, **Side** and **End** snap back. An end with a connection is
   made against a sample column (the connection editor's default support),
-  which is not drawn. The **Start** card sits left of the view and the
-  **End** card right, like the member's ends (stacked on a narrow window).
-  Below the view the member is shown end-on at a preview size (top flange
-  up, across the view is the XLine's local X), where you click one of the
-  nine points to put it on the XLine (the cross), type the offsets, pick a
-  rotation (0/90/180/270 or typed) and the extensions. The two cards pick a
+  which is not drawn. Top left, beside the view, the member is shown end-on
+  at a preview size (top flange up, across the view is the XLine's local X),
+  where you click one of the nine points to put it on the XLine (the
+  cross), type the offsets, pick a rotation (0/90/180/270 or typed) and the
+  extensions. The **Start** and **End** cards sit side by side below, like
+  the member's ends (everything stacks in one column on a narrow window).
+  The two cards pick a
   connection template (or none) and take per-end overrides of its
   parameters, with a link to the connection editor, which opens on top and
   returns to the page. A card can't know what its end will sit on, so a
@@ -93,7 +118,7 @@ end plate with four bolts, and beams and a column built from them).
   until **Save**, which sends a `:template/save` edit. Every member built from
   the template regenerates, and the patch reaches every open viewer.
 - To apply one to many members, select them (Shift + click adds or
-  removes), choose the template and the size under **Assembly template**,
+  removes), choose the template and the size under **Apply a template**,
   and **Apply** (`:assembly/apply-template`). The supporting member of each
   end is read from the end node; an end that isn't on another XLine gets no
   connection, and the status bar says so.
@@ -125,15 +150,16 @@ viewer over a websocket. The browser never sends geometry.
 | `construcad.edits` | source edits: validate, apply to the model map, upsert patch (pure) |
 | `construcad.records` | one XTDB document per record, to and from the model map |
 | `construcad.seed` | the demo project |
+| `construcad.navigator` | the navigator tree (level of an assembly, grouping, search) and the properties summary (pure) |
 | `construcad.snap` | snap candidates and the node references they write (pure) |
 | `construcad.store` | XTDB reads and the edit transaction |
 | `construcad.template-edit` | template drafts, typed parameters, the end-on view and member-space of the member, in-browser preview models, assembly page edits (pure) |
-| `construcad.api` | EDN endpoints (buildings, view, templates, one assembly, edits) and the patch websocket |
+| `construcad.api` | EDN endpoints (projects, buildings, view, templates, one assembly, edits) and the patch websocket |
 | `construcad.app.reader` | instructions to three.js; `construcad.app.slice` cuts and caps meshes |
 | `construcad.app.viewport` | camera, navigation, view cube, hidden-line display, picking |
 | `construcad.app.templates` | template library panel, assembly page (templates and single assemblies), connection editor |
 | `construcad.app.mini-view` | the small 3D views in the template editors (the assembly page's Assembly view, the connection preview) |
-| `construcad.app.main` | panel, XLine tool, grips, selection, context menu, applying templates, server round trip |
+| `construcad.app.main` | toolbar, navigator, properties, XLine tool, grips, selection, context menu, applying templates, server round trip |
 
 ## Core
 
@@ -141,7 +167,7 @@ viewer over a websocket. The browser never sends geometry.
 |---|---|
 | `modeller.vec` | vectors and the tolerance policy |
 | `modeller.frame` | rigid frames (ECS), XLine frame rule, compose/invert |
-| `modeller.grid` | grids, levels, grid points, reading a point back against the grid |
+| `modeller.grid` | grids, levels, grid points, reading a point back against the grid, the level a point is on or above |
 | `modeller.node` | node references (absolute, grid, coincident, on-line, relative) |
 | `modeller.model` | dependency-ordered XLine resolution, affected-set calculation |
 | `modeller.profile` | outline loops with arc bulges, round-corners, tessellation, area, nine insertion points, face planes |

@@ -2,11 +2,11 @@
   "The template library panel and the editors, shown as a dialog over the
   editor:
 
-  - the assembly page: one 3D view of the member alone on its XLine, opening
-    side-on (start on the left), between a Start and an End card that pick a
-    connection template (or none) with per-end overrides; below it the
-    member end-on with its nine insertion points, offset, rotation and
-    extensions. It edits an assembly template,
+  - the assembly page: top left the member end-on with its nine insertion
+    points, offset, rotation and extensions; top right one 3D view of the
+    member alone on its XLine, opening side-on (start on the left); below,
+    a Start and an End card that pick a connection template (or none) with
+    per-end overrides. It edits an assembly template,
     or (instance mode) one assembly in the model, read from the server with
     modeller.template/assembly-state, with its mark, role and size; Save
     sends :assembly/update and Apply template... re-applies a template;
@@ -81,6 +81,19 @@
   (let [kind (:template/kind draft)]
     (swap! dlg* update :stack conj (merge {:kind kind :draft draft :arrangement :column}
                                           (default-sizes kind draft)))
+    (render!)))
+
+(defn open-connection!
+  "Open the connection editor on a connection template as one end of a
+  member uses it: the member's size framing into its support's, a column
+  or a beam as the support's role says."
+  [template-id {:keys [size support-size support-role]}]
+  (when-let [t (get-in @env* [:templates template-id])]
+    (swap! dlg* update :stack conj
+           (cond-> {:kind :connection :draft t :arrangement (if (#{nil :column} support-role) :column :beam)
+                    :size "310UB40.4" :support-size "200UC46.2"}
+             (string? size) (assoc :size size)
+             (string? support-size) (assoc :support-size support-size)))
     (render!)))
 
 (defn- instance-dlg [{:keys [state supports context]} info]
@@ -470,18 +483,18 @@
           (h :button {:class "on" :disabled saving? :on-click save!} "Save"))
        (when error (h :div {:class "dialog-error"} error))
        (h :div {:class "dialog-body assembly"}
-          (end-card :start dlg size)
+          (main-member-section dlg size
+                               (h :div {:class "row"} "Preview size "
+                                  (size-select "size" size #(update-top! assoc :size %)
+                                               (sizes-for (:template/role draft)))))
           (assembly-view preview
                          (str "The member alone, on a " (fmt length) " mm sample XLine (the thin line, a ball at each node), "
                               "just long enough to keep its two end details apart. "
                               "An end with a connection is made against a " (:support-size dlg)
                               " column, as in the connection editor, which isn't drawn.")
                          :length length)
+          (end-card :start dlg size)
           (end-card :end dlg size)
-          (main-member-section dlg size
-                               (h :div {:class "row"} "Preview size "
-                                  (size-select "size" size #(update-top! assoc :size %)
-                                               (sizes-for (:template/role draft)))))
           (h :div {:class "messages"} (regen-messages errors))))))
 
 (defn- template-note [{:assembly/keys [template from-template]}]
@@ -536,18 +549,18 @@
           (h :label {} (h :span {:class "muted"} "XLine rotation ")
              (num-field "xrot" rotation #(update-top! assoc :rotation (or % 0)))))
        (h :div {:class "dialog-body assembly"}
-          (end-card :start dlg size)
-          (assembly-view (or preview {:instructions {} :nodes []})
-                         (str "This assembly alone, as Save would make it, on its " (fmt (:length info))
-                              " mm XLine (the thin line, a ball at each node), laid along the view whichever way it runs. "
-                              "What its ends sit on isn't drawn."))
-          (end-card :end dlg size)
           (main-member-section dlg size
                                (h :div {:class "row"} "Size "
                                   (if (map? size)
                                     (h :span {:class "muted"} "custom section")
                                     (size-select "size" size #(update-draft! assoc :assembly/size %)
                                                  (sizes-for role)))))
+          (assembly-view (or preview {:instructions {} :nodes []})
+                         (str "This assembly alone, as Save would make it, on its " (fmt (:length info))
+                              " mm XLine (the thin line, a ball at each node), laid along the view whichever way it runs. "
+                              "What its ends sit on isn't drawn."))
+          (end-card :start dlg size)
+          (end-card :end dlg size)
           (h :div {:class "messages"} (regen-messages (:errors preview)))))))
 
 ;; --- dialog and library panel -----------------------------------------------------------

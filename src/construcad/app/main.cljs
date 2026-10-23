@@ -5,19 +5,25 @@
   which every open viewer of the building also receives."
   (:require [cljs.reader :as reader]
             [clojure.string :as str]
-            [construcad.app.dom :refer [h]]
+            [construcad.app.dom :as dom :refer [h]]
             [construcad.app.grid-view :as grid-view]
             [construcad.app.reader :as instr-reader]
             [construcad.app.templates :as templates]
             [construcad.app.viewport :as vp]
+            [construcad.navigator :as nav]
             [construcad.snap :as snap]
             [construcad.template-edit :as te]))
 
 (defonce state*
-  (atom {:buildings [] :building-id nil
-         :view nil          ; {:grid :levels :resolved :xlines :errors :building}
+  (atom {:projects [] :project-id nil :building-id nil
+         :view nil          ; {:grid :levels :resolved :xlines :instructions :errors :building}
          :objects {}        ; assembly id -> three.js root
-         :filter-level nil  ; level id shown, nil = every level
+         :filter-level nil  ; level id the tree and viewport show, nil = every level
+         :tree-query ""     ; navigator search text
+         :collapsed #{}     ; navigator branches closed: [level-id] and [level-id role]
+         :pages {}          ; assembly id -> its page data (properties: ends, supports)
+         :props-open? true
+         :popover nil       ; :levels or :templates, opened from the toolbar
          :active-level nil  ; level id the grid is drawn at and snaps to
          :tool :select
          :selected nil      ; the assembly the grips and properties are for
@@ -49,8 +55,14 @@
 (defn level [id] (some #(when (= id (:xt/id %)) %) (get-in @state* [:view :levels])))
 (defn active-level [] (level (:active-level @state*)))
 
-(defn- level-shown? [level-id]
-  (let [f (:filter-level @state*)] (or (nil? f) (= f level-id))))
+(defn- apply-level-filter!
+  "Show only the assemblies on the filtered level (nil: all of them).
+  Hidden ones can't be picked."
+  []
+  (let [{:keys [view objects filter-level]} @state*]
+    (doseq [[id ^js o] objects]
+      (set! (.-visible o) (or (nil? filter-level)
+                              (= filter-level (nav/assembly-level (:levels view) (get-in view [:resolved id]))))))))
 
 (defn- show-assembly! [id instr]
   (when-let [old (get-in @state* [:objects id])] (instr-reader/dispose! old))
@@ -81,8 +93,12 @@
      (swap! state* assoc :selection selection :command nil
             :apply (if add? (:apply @state*) {})
             :selected (if (contains? selection id) id (first selection)))
+     ;; open the tree down to the selected assembly
+     (when-let [sel (:selected @state*)]
+       (swap! state* update :collapsed #(apply disj % (nav/tree-path (:view @state*) sel))))
      (update-overlays!)
-     (render-panel!))))
+     (render-panel!)
+     (some-> (:tree @ui*) (.querySelector ".tree-item.selected") (.scrollIntoView #js {:block "nearest"})))))
 
 (defn- draw-grid! []
   (grid-view/draw! (get-in @state* [:view :grid]) (:level/elevation (active-level) 0)))
@@ -92,17 +108,20 @@
   level), and take the grid and levels if the edit changed them."
   [{:keys [upsert resolved xlines created grid levels errors] :as patch}]
   (let [{:keys [objects]} @state*
-        shown? #(or (contains? objects %)
-                    (and (some #{%} created) (level-shown? (get-in xlines [% :assembly/level]))))
+        shown? #(or (contains? objects %) (some #{%} created))
         ids (filter shown? (keys upsert))]
     (doseq [id ids] (show-assembly! id (upsert id)))
     (swap! state* update :view
            (fn [v] (cond-> (-> v
                                (update :resolved merge (select-keys resolved ids))
                                (update :xlines merge (select-keys xlines ids))
+                               (update :instructions merge (select-keys upsert ids))
                                (assoc :errors errors))
                      grid (assoc :grid grid)
                      levels (assoc :levels levels))))
+    ;; page data (connections, supports) of a changed assembly is stale
+    (swap! state* update :pages #(if (:templates patch) {} (apply dissoc % ids)))
+    (apply-level-filter!)
     (when-let [t (:templates patch)] (templates/templates-changed! t))
     ;; snap points may have moved with the patch
     (swap! state* assoc :snap nil)
@@ -168,10 +187,11 @@
                                                 2000)))
     (swap! ui* assoc :socket ws)))
 
-(defn load-view! [& {:keys [fit?]}]
-  (let [{:keys [building-id filter-level]} @state*]
-    (-> (fetch-edn (str "/api/buildings/" building-id "/view"
-                        (when filter-level (str "?level=" filter-level))) {})
+(defn load-view!
+  "Load every assembly of the building; the level filter only hides some."
+  [& {:keys [fit?]}]
+  (let [{:keys [building-id]} @state*]
+    (-> (fetch-edn (str "/api/buildings/" building-id "/view") {})
         (.then (fn [[_ v]]
                  (doseq [[_ o] (:objects @state*)] (instr-reader/dispose! o))
                  (swap! state* (fn [st]
@@ -182,10 +202,12 @@
                  (when-not (level (:active-level @state*))
                    (swap! state* assoc :active-level (:xt/id (last (:levels v)))))
                  (doseq [[id instr] (:instructions v)] (show-assembly! id instr))
+                 (apply-level-filter!)
                  (vp/refresh-display!)
                  (draw-grid!)
                  (doseq [id (:selection @state*)] (highlight! id true))
                  (when fit? (vp/look! [1 -1 1]))
+                 (swap! state* assoc :pages {})
                  (update-overlays!)
                  (render-panel!)
                  (set-status! (str (count (:instructions v)) " assemblies loaded")))))))
@@ -388,7 +410,8 @@
     (cancel!)
     (set-status! "Cancelled")))
 
-;; --- side panel ------------------------------------------------------------------
+
+;; --- panels: toolbar, navigator, properties, popovers -------------------------------
 
 (defn- number-input [value on-commit & [attrs]]
   (h :input (merge {:type "number" :step "any" :value value :class "num"
@@ -414,17 +437,8 @@
       :else (pr-str ref))))
 
 (defn- levels-section []
-  (let [{:keys [view active-level filter-level]} @state*]
+  (let [{:keys [view active-level]} @state*]
     (section "Levels"
-             (h :label {:class "row"} "Show "
-                (h :select {:on-change (fn [e]
-                                         (let [v (.. e -target -value)]
-                                           (swap! state* assoc :filter-level
-                                                  (some #(when (= v (str (:xt/id %))) (:xt/id %)) (:levels view)))
-                                           (load-view!)))}
-                   (h :option {:value "" :selected (nil? filter-level)} "All levels")
-                   (for [l (:levels view)]
-                     (h :option {:value (str (:xt/id l)) :selected (= filter-level (:xt/id l))} (:level/name l)))))
              (h :table {}
                 (h :tr {} (h :th {} "Work") (h :th {} "Name") (h :th {} "Elevation"))
                 (for [l (reverse (:levels view))]
@@ -435,7 +449,8 @@
                      (h :td {} (:level/name l))
                      (h :td {} (number-input (:level/elevation l)
                                              #(send-edit! {:edit/type :level/set-elevation
-                                                           :level/id (:xt/id l) :elevation %})))))))))
+                                                           :level/id (:xt/id l) :elevation %}))))))
+             (h :p {:class "muted small"} "The grid is drawn, and grid snaps sit, at the working level."))))
 
 (defn- grid-section []
   (let [g (get-in @state* [:view :grid])
@@ -470,26 +485,6 @@
                                     :length (get-in view [:resolved id :length] 0)
                                     :rotation (:xline/rotation x 0)}))))
 
-(defn- selection-section []
-  (let [{:keys [selected view]} @state*
-        x (get-in view [:xlines selected])]
-    (section "Selection"
-             (if-not x
-               (h :p {:class "muted"} "Nothing selected.")
-               (list
-                (h :table {}
-                   (h :tr {} (h :th {} "Mark") (h :td {} (:assembly/mark x)))
-                   (h :tr {} (h :th {} "Role") (h :td {} (name (:xline/role x :xline))))
-                   (h :tr {} (h :th {} "Size") (h :td {} (let [sz (:assembly/size x)] (if (string? sz) sz "—"))))
-                   (h :tr {} (h :th {} "Template")
-                      (h :td {} (cond
-                                  (:assembly/template x) (or (templates/template-name (:assembly/template x)) "(unknown)")
-                                  (:assembly/from-template x) (str "edited, from "
-                                                                   (or (templates/template-name (:assembly/from-template x)) "(unknown)"))
-                                  :else "—"))))
-                (h :div {:class "buttons"}
-                   (h :button {:on-click #(edit-assembly! selected) :title "Or right-click the member"} "Edit…")))))))
-
 (defn- apply-section
   "Apply an assembly template at a size to every selected member."
   []
@@ -501,10 +496,12 @@
         tid (or (:template-id apply) current (:template/id (first candidates)))
         sizes (te/sizes-for-role (:sections @templates/env*)
                                  (get-in @templates/env* [:templates tid :template/role] role))
-        size (or (:size apply) (some :assembly/size xs) (first sizes))]
+        size (or (:size apply)
+                 (some #(let [s (or (:assembly/size %) (:assembly/profile %))] (when (string? s) s)) xs)
+                 (first sizes))]
     (when (seq xs)
-      (section "Assembly template"
-               (h :p {:class "muted"} (str (count xs) " selected; Shift + click adds or removes members"))
+      (section "Apply a template"
+               (h :p {:class "muted small"} (str (count xs) " selected; Shift + click adds or removes members"))
                (h :label {:class "row"} "Template "
                   (h :select {:on-change (fn [e] (let [v (.. e -target -value)]
                                                    (swap! state* assoc-in [:apply :template-id]
@@ -529,45 +526,250 @@
       (section "Regeneration messages"
                (h :ul {:class "errors"} (for [e errors] (h :li {} (pr-str e))))))))
 
+;; toolbar
+
+(defn- toggle-popover! [k]
+  (swap! state* update :popover #(when-not (= % k) k))
+  (render-panel!))
+
+(defn- render-toolbar! []
+  (when-let [el (:toolbar @ui*)]
+    (let [{:keys [tool popover]} @state*
+          tool-button (fn [t label title] (h :button {:class (when (= tool t) "on") :title title :on-click #(set-tool! t)} label))]
+      (.replaceChildren
+       el
+       (h :strong {:class "brand"} "ConstruCAD")
+       (h :div {:class "tool-group"}
+          (tool-button :select "Select" "Click a member; drag a grip to move an end")
+          (tool-button :xline "XLine" "Draw a new member: click its start and end")
+          (h :label {:title "The role new XLines get"} "New XLines are "
+             (h :select {:on-change #(swap! state* assoc :xline-role (keyword (.. % -target -value)))}
+                (for [[r label] te/role-names]
+                  (h :option {:value (name r) :selected (= r (:xline-role @state*))} label)))))
+       (h :div {:class "tool-group"}
+          (h :label {} "Display "
+             (h :select {:on-change #(vp/set-display! (keyword (.. % -target -value)))}
+                (for [[k label] [[:hidden-line "Hidden line"] [:shaded "Shaded"] [:wireframe "Wireframe"]]]
+                  (h :option {:value (name k) :selected (= k (:display @vp/vp*))} label))))
+          (h :label {}
+             (h :input {:type "checkbox" :checked (:show-xlines? @vp/vp*)
+                        :on-change #(vp/show-xlines! (.. % -target -checked))})
+             " XLines")
+          (h :button {:on-click vp/zoom-extents!} "Zoom extents"))
+       (h :div {:class "tool-group"}
+          (h :button {:class (when (= :levels popover) "on") :on-click #(toggle-popover! :levels)} "Levels & grid")
+          (h :button {:class (when (= :templates popover) "on") :on-click #(toggle-popover! :templates)} "Templates"))))))
+
+(defn- render-popover! []
+  (when-let [el (:popover @ui*)]
+    (let [k (:popover @state*)]
+      (set! (.. el -style -display) (if k "block" "none"))
+      (dom/replace-keeping-focus!
+       el
+       (when k
+         [(h :div {:class "popover-head"}
+             (h :strong {} (if (= :levels k) "Levels & grid" "Templates"))
+             (h :button {:class "small" :title "Close" :on-click #(toggle-popover! k)} "✕"))
+          (if (= :levels k)
+            (h :div {} (levels-section) (grid-section))
+            (templates/library-section))])))))
+
+;; navigator
+
+(declare render-tree! render-props!)
+
+(defn- open-building! [id]
+  (hide-menu!)
+  (swap! state* assoc :building-id id :filter-level nil :pages {} :collapsed #{}
+         :selection #{} :selected nil)
+  (connect-socket! id)
+  (load-templates!)
+  (load-view! :fit? true))
+
+(defn- picker [label value options on-pick]
+  (h :label {:class "picker"}
+     (h :span {:class "muted small"} label)
+     (h :select {:data-k label :on-change #(on-pick (.. % -target -value))}
+        (for [[v text] options] (h :option {:value v :selected (= v value)} text)))))
+
+(defn- render-nav-head! []
+  (when-let [el (:nav-head @ui*)]
+    (let [{:keys [projects project-id building-id view filter-level tree-query]} @state*
+          project (some #(when (= project-id (:xt/id %)) %) projects)]
+      (dom/replace-keeping-focus!
+       el
+       [(picker "Project" (str project-id) (map (fn [p] [(str (:xt/id p)) (:project/name p)]) projects)
+                (fn [v] (let [p (some #(when (= v (str (:xt/id %))) %) projects)]
+                          (swap! state* assoc :project-id (:xt/id p))
+                          (if-let [b (first (:buildings p))]
+                            (open-building! (:xt/id b))
+                            (render-panel!)))))
+        (picker "Building" (str building-id)
+                (if (seq (:buildings project))
+                  (map (fn [b] [(str (:xt/id b)) (:building/name b)]) (:buildings project))
+                  [["" "No buildings"]])
+                (fn [v] (when-let [b (some #(when (= v (str (:xt/id %))) %) (:buildings project))]
+                          (open-building! (:xt/id b)))))
+        (picker "Level" (str filter-level)
+                (cons ["" "All levels"] (map (fn [l] [(str (:xt/id l)) (:level/name l)])
+                                             (reverse (:levels view))))
+                (fn [v] (swap! state* assoc :filter-level
+                               (some #(when (= v (str (:xt/id %))) (:xt/id %)) (:levels view)))
+                  (apply-level-filter!)
+                  (render-panel!)))
+        (h :input {:type "search" :class "tree-search" :placeholder "Find a mark or size" :data-k "tree-search"
+                   :value tree-query
+                   :on-input (fn [e] (swap! state* assoc :tree-query (.. e -target -value))
+                               (render-tree!))})]))))
+
+(defn- branch [k label n children]
+  (let [open? (not (contains? (:collapsed @state*) k))]
+    (h :li {:class "tree-branch"}
+       (h :div {:class "tree-label" :on-click #(do (swap! state* update :collapsed (if open? conj disj) k)
+                                                   (render-tree!))}
+          (h :span {:class "twisty"} (if open? "▾" "▸"))
+          label (h :span {:class "count"} n))
+       (when open? (h :ul {} children)))))
+
+(defn- tree-item [{:keys [id mark size]}]
+  (let [{:keys [selection selected]} @state*]
+    (h :li {:class (str "tree-item" (when (contains? selection id) " in-selection") (when (= id selected) " selected"))
+            :title "Double-click or right-click to edit the assembly"
+            :on-click #(select! id (.-shiftKey %))
+            :on-dblclick #(edit-assembly! id)
+            :on-contextmenu (fn [^js e]
+                              (.preventDefault e)
+                              (when-not (contains? (:selection @state*) id) (select! id))
+                              (show-menu! e id))}
+       (h :span {:class "mark"} mark)
+       (when size (h :span {:class "size"} size)))))
+
+(defn render-tree! []
+  (when-let [el (:tree @ui*)]
+    (let [{:keys [view filter-level tree-query]} @state*
+          t (nav/tree view :level-id filter-level :query tree-query)
+          count-of (fn [groups] (reduce + (map (comp count :items) groups)))]
+      (.replaceChildren
+       el
+       (if-not view
+         (h :p {:class "muted"} "Loading…")
+         (h :ul {:class "tree"}
+            (h :li {:class "tree-root"}
+               (h :div {:class "tree-label building"} (get-in view [:building :building/name] "Building"))
+               (if (empty? t)
+                 (h :p {:class "muted small"} (if (str/blank? tree-query) "No assemblies here." "Nothing matches."))
+                 (h :ul {}
+                    (for [{lid :level/id lname :level/name groups :groups} t]
+                      (branch [lid] lname (count-of groups)
+                              (for [{:keys [role label items]} groups]
+                                (branch [lid role] label (count items) (map tree-item items))))))))))))))
+
+;; properties
+
+(defn- ensure-page!
+  "Fetch the selected assembly's page data (its connections and supports)
+  once; the properties re-render when it comes."
+  [id]
+  (when (and id (not (contains? (:pages @state*) id)))
+    (swap! state* assoc-in [:pages id] :loading)
+    (-> (load-assembly! id)
+        (.then (fn [page]
+                 (when (= :loading (get-in @state* [:pages id]))
+                   (swap! state* assoc-in [:pages id] (or page :failed))
+                   (render-props!)))))))
+
+(defn- fmt-length [v] (if (number? v) (str (js/Math.round v) " mm") "—"))
+
+(def part-labels {:main "Main member" :part "Part" :plate "End plate" :bolts "Bolts"})
+
+(defn- end-row [end {:keys [template-id template-name support]} size]
+  (h :div {:class "end-row"}
+     (h :div {} (h :strong {} (if (= :start end) "Start " "End "))
+        (if template-name template-name (h :span {:class "muted"} "plain end")))
+     (h :div {:class "muted small"}
+        (if support
+          (str "on " (:assembly/mark support) (when-let [s (:size support)] (str ", " s)))
+          "not on another XLine"))
+     (when template-id
+       (h :a {:href "#" :on-click (fn [e] (.preventDefault e)
+                                    (templates/open-connection! template-id {:size size :support-size (:size support)
+                                                                             :support-role (:xline/role support)}))}
+          (str "Edit " (name end) " connection")))))
+
+(defn- properties-body []
+  (let [{:keys [selected selection view pages]} @state*
+        page (get pages selected)
+        p (when selected (nav/properties view selected (when (map? page) page) templates/template-name))]
+    (ensure-page! selected)
+    (if-not p
+      (h :div {:class "empty"}
+         (h :p {} "Nothing selected.")
+         (h :p {:class "muted small"} "Pick an assembly in the tree or the model to see its properties."))
+      (h :div {}
+         (when (> (count selection) 1)
+           (h :p {:class "muted small"} (str (count selection) " selected; showing " (:mark p) ".")))
+         (h :table {:class "props-table"}
+            (h :tr {} (h :th {} "Mark") (h :td {} (h :strong {} (:mark p))))
+            (h :tr {} (h :th {} "Role") (h :td {} (:role-label p)))
+            (h :tr {} (h :th {} "Size") (h :td {} (or (:size p) "—")))
+            (h :tr {} (h :th {} "Level") (h :td {} (or (:level p) "—")))
+            (h :tr {} (h :th {} "Length") (h :td {} (fmt-length (:length p))))
+            (h :tr {} (h :th {} "Template")
+               (h :td {} (let [{:keys [kind] tname :name} (:template p)]
+                           (case kind
+                             :template tname
+                             :edited (list (h :span {:class "muted"} "edited by hand, from ") tname)
+                             "—")))))
+         (h :div {:class "buttons"}
+            (h :button {:class "on" :on-click #(edit-assembly! selected) :title "Or double-click it in the tree"}
+               "Edit assembly"))
+         (h :h3 {} "Connections")
+         (if (map? page)
+           (list (end-row :start (get-in p [:ends :start]) (:size p))
+                 (end-row :end (get-in p [:ends :end]) (:size p)))
+           (h :p {:class (if (= :failed page) "warn small" "muted small")}
+              (if (= :failed page) "Could not load its connections." "Loading…")))
+         (h :h3 {} "Parts")
+         (h :table {:class "parts"}
+            (for [{:keys [kind end size] n :count} (:parts p)]
+              (h :tr {}
+                 (h :td {} (part-labels kind) (when end (h :span {:class "muted"} (str " (" (name end) ")"))))
+                 (h :td {} size)
+                 (h :td {:class "tight"} (str "× " n)))))))))
+
+(defn render-props! []
+  (when-let [el (:props @ui*)]
+    (let [open? (:props-open? @state*)
+          toggle! #(do (swap! state* update :props-open? not) (render-props!))]
+      (.toggle (.-classList (:app @ui*)) "props-collapsed" (not open?))
+      (dom/replace-keeping-focus!
+       el
+       (if-not open?
+         [(h :button {:class "props-tab" :title "Show the properties" :on-click toggle!} "‹ Properties")]
+         [(h :div {:class "props-head"}
+             (h :h2 {} "Properties")
+             (h :button {:class "small" :title "Hide the properties" :on-click toggle!} "›"))
+          (properties-body)
+          (apply-section)
+          (messages-section)])))))
+
 (defn render-panel! []
-  (when-let [panel (:panel @ui*)]
-    (let [{:keys [tool view]} @state*
-          tool-button (fn [t label] (h :button {:class (when (= tool t) "on") :on-click #(set-tool! t)} label))]
-      (.apply (.-replaceChildren panel) panel
-       (into-array
-        (remove nil?
-         [(h :header {} (h :h1 {} "ConstruCAD")
-          (h :div {:class "muted"} (get-in view [:building :building/name] "")))
-       (section "Tools"
-                (h :div {:class "buttons"}
-                   (tool-button :select "Select")
-                   (tool-button :xline "XLine")
-                   (h :button {:on-click vp/zoom-extents!} "Zoom extents"))
-                (h :label {:class "row" :title "The role new XLines get. A beam drawn at one grid intersection is a column."}
-                   "New XLines are "
-                   (h :select {:on-change #(swap! state* assoc :xline-role (keyword (.. % -target -value)))}
-                      (for [[r label] te/role-names]
-                        (h :option {:value (name r) :selected (= r (:xline-role @state*))} label))))
-                (h :label {:class "row"} "Display "
-                   (h :select {:on-change #(vp/set-display! (keyword (.. % -target -value)))}
-                      (for [[k label] [[:hidden-line "Hidden line"] [:shaded "Shaded"] [:wireframe "Wireframe"]]]
-                        (h :option {:value (name k) :selected (= k (:display @vp/vp*))} label))))
-                (h :label {:class "row"}
-                   (h :input {:type "checkbox" :checked (:show-xlines? @vp/vp*)
-                              :on-change #(vp/show-xlines! (.. % -target -checked))})
-                   " Show XLines"))
-       (selection-section)
-       (apply-section)
-       (templates/library-section)
-       (levels-section)
-       (grid-section)
-       (messages-section)]))))))
+  (render-toolbar!)
+  (render-nav-head!)
+  (render-tree!)
+  (render-props!)
+  (render-popover!))
 
 ;; --- start-up --------------------------------------------------------------------
 
 (defn- build-shell! []
   (let [app (.getElementById js/document "app")
-        panel (h :aside {:class "panel"})
+        toolbar (h :header {:class "toolbar"})
+        nav-head (h :div {:class "nav-head"})
+        tree (h :div {:class "tree-wrap"})
+        nav (h :aside {:class "panel nav"} nav-head tree)
+        props (h :aside {:class "panel props"})
+        popover (h :div {:class "panel popover"})
         viewport (h :main {:class "viewport"})
         prompt (h :div {:class "prompt"})
         input (h :input {:type "text" :class "command-input" :placeholder "x,y,z or @dx,dy,dz then Enter"
@@ -578,9 +780,10 @@
                                          (set! (.. e -target -value) "")))})
         status (h :div {:class "status"})
         command-bar (h :div {:class "command-bar"} prompt input status)]
-    (.replaceChildren app panel viewport)
-    (.append viewport command-bar)
-    (swap! ui* assoc :panel panel :viewport viewport :prompt prompt :input input :status status)
+    (.replaceChildren app toolbar nav viewport props)
+    (.append viewport popover command-bar)
+    (swap! ui* assoc :app app :toolbar toolbar :nav-head nav-head :tree tree :props props :popover popover
+           :viewport viewport :prompt prompt :input input :status status)
     viewport))
 
 (defn init! []
@@ -598,13 +801,14 @@
     (.addEventListener js/document "pointerdown"
                        (fn [e] (when-not (some-> ^js (:menu @ui*) (.contains (.-target e))) (hide-menu!)))
                        true)
-    (-> (fetch-edn "/api/buildings" {})
-        (.then (fn [[_ buildings]]
-                 (let [id (:xt/id (first buildings))]
-                   (swap! state* assoc :buildings buildings :building-id id)
-                   (connect-socket! id)
-                   (load-templates!)
-                   (load-view! :fit? true)))))))
+    (render-panel!)
+    (-> (fetch-edn "/api/projects" {})
+        (.then (fn [[_ projects]]
+                 (let [p (or (some #(when (seq (:buildings %)) %) projects) (first projects))]
+                   (swap! state* assoc :projects projects :project-id (:xt/id p))
+                   (if-let [b (first (:buildings p))]
+                     (open-building! (:xt/id b))
+                     (render-panel!))))))))
 
 (defn reload! []
   (render-panel!)

@@ -5,11 +5,59 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
   font: 13px/1.4 Inter, ui-sans-serif, system-ui, sans-serif; }
-#app { display: grid; grid-template-columns: 300px 1fr; height: 100vh; }
+/* the editor: toolbar on top, the navigator left, the model, properties right */
+#app { display: grid; grid-template-columns: 260px minmax(0, 1fr) 290px; grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "toolbar toolbar toolbar" "nav view props"; height: 100vh; }
+#app.props-collapsed { grid-template-columns: 260px minmax(0, 1fr) 34px; }
 
-.panel { overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 12px 14px; }
-.panel header { margin-bottom: 10px; }
-.panel h1 { font-size: 17px; margin: 0; letter-spacing: .02em; }
+.toolbar { grid-area: toolbar; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 6px 12px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.toolbar .brand { font-size: 15px; letter-spacing: .02em; }
+.toolbar .tool-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.toolbar label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.toolbar select { font: inherit; }
+
+.panel { overflow-y: auto; background: var(--panel); padding: 12px 14px; }
+.panel.nav { grid-area: nav; display: flex; flex-direction: column; padding: 0; overflow: hidden; border-right: 1px solid var(--line); }
+.nav-head { display: grid; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.picker { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 6px; }
+.picker select { min-width: 0; }
+.tree-search { font: inherit; padding: 4px 6px; border: 1px solid #a8b6bf; border-radius: 4px; min-width: 0; }
+.tree-wrap { flex: 1; overflow: auto; padding: 6px 4px 12px; }
+ul.tree, ul.tree ul { list-style: none; margin: 0; padding: 0; }
+ul.tree ul { padding-left: 12px; }
+.tree-label { display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; cursor: pointer; user-select: none; }
+.tree-label:hover { background: #eef2f4; }
+.tree-label.building { font-weight: 600; cursor: default; }
+.tree-label.building:hover { background: none; }
+.tree-label .twisty { width: 12px; color: var(--muted); font-size: 10px; }
+.tree-label .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+.tree-item { display: flex; align-items: baseline; gap: 8px; padding: 2px 6px 2px 22px; border-radius: 4px; cursor: pointer; user-select: none; }
+.tree-item:hover { background: #eef2f4; }
+.tree-item .size { color: #9aa8b4; font-size: 11px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-item.in-selection { background: var(--accent-soft); }
+.tree-item.selected { background: var(--accent); color: white; }
+.tree-item.selected .size { color: #cdeef1; }
+
+.panel.props { grid-area: props; border-left: 1px solid var(--line); }
+#app.props-collapsed .panel.props { padding: 8px 4px; }
+.props-head { display: flex; align-items: center; gap: 6px; }
+.props-head h2 { flex: 1; margin-top: 0; }
+.props-tab { writing-mode: vertical-rl; padding: 10px 4px; width: 26px; }
+.props .empty { padding: 20px 4px; text-align: center; }
+.props h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 4px; }
+.props .props-table th { width: 70px; }
+.props .buttons { margin-top: 8px; }
+.end-row { padding: 4px 0; border-bottom: 1px solid #eef2f4; }
+.end-row a { color: var(--accent); font-size: 12px; }
+.panel table.parts td { padding: 2px 4px 2px 0; vertical-align: top; }
+.panel table.parts td:nth-child(2) { white-space: nowrap; }
+.props select { max-width: 100%; min-width: 0; }
+
+.popover { position: absolute; z-index: 3; top: 12px; left: 12px; width: 340px; max-width: calc(100% - 24px);
+  max-height: calc(100% - 120px); border: 1px solid #b8c4cc; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+.popover-head { display: flex; align-items: center; justify-content: space-between; }
+.popover section h2 { margin-top: 10px; }
 .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
   margin: 16px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
 .panel table { width: 100%; border-collapse: collapse; }
@@ -24,7 +72,7 @@ button { font: inherit; padding: 4px 10px; border: 1px solid #a8b6bf; border-rad
 button.on { background: var(--accent); border-color: var(--accent); color: white; }
 .errors { margin: 0; padding-left: 16px; color: var(--warn); font: 11px/1.4 ui-monospace, monospace; }
 
-.viewport { position: relative; overflow: hidden; }
+.viewport { grid-area: view; position: relative; overflow: hidden; }
 .viewport canvas { display: block; width: 100%; height: 100%; }
 
 .command-bar { position: absolute; left: 12px; right: 12px; bottom: 10px; display: grid;
@@ -45,9 +93,19 @@ button.on { background: var(--accent); border-color: var(--accent); color: white
 .cube-label { fill: #324650; font: 700 9px Inter, ui-sans-serif, system-ui, sans-serif;
   text-anchor: middle; dominant-baseline: central; pointer-events: none; }
 
-@media (max-width: 800px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: 45vh 55vh; }
-  .panel { order: 2; border-right: 0; border-top: 1px solid var(--line); }
+@media (max-width: 1100px) {
+  #app { grid-template-columns: 220px minmax(0, 1fr) 250px; }
+  #app.props-collapsed { grid-template-columns: 220px minmax(0, 1fr) 34px; }
+}
+/* narrow: one column, the model first, then the navigator and properties */
+@media (max-width: 760px) {
+  html, body { height: auto; }
+  #app, #app.props-collapsed { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto auto;
+    grid-template-areas: "toolbar" "view" "nav" "props"; height: auto; }
+  .panel.nav { border-right: 0; border-top: 1px solid var(--line); }
+  .tree-wrap { max-height: 50vh; }
+  .panel.props { border-left: 0; border-top: 1px solid var(--line); }
+  .props-tab { writing-mode: horizontal-tb; width: auto; }
   .command-bar { grid-template-columns: 1fr; grid-template-areas: "prompt" "input" "status"; }
 }
 
@@ -77,22 +135,17 @@ button.small, .buttons.small button { padding: 2px 7px; font-size: 12px; }
 .dialog-body { flex: 1; overflow: auto; padding: 4px 14px 14px; }
 .dialog-body.two-col { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(380px, 1.1fr); gap: 18px; }
 .dialog-body.two-col .col { display: flex; flex-direction: column; min-height: 0; }
-/* assembly page: the Start and End cards either side of the view, like the
-   member's ends; the end-on section and placement under the view */
-.dialog-body.assembly { display: grid; grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(250px, 300px);
-  grid-template-areas: "start view end" "start setup end" "msgs msgs msgs"; grid-template-rows: auto 1fr auto;
-  gap: 4px 16px; align-items: start; }
+/* assembly page: the end-on section and placement top left, the 3D view top
+   right, the Start and End cards side by side below, like the member's ends */
+.dialog-body.assembly { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-areas: "setup view" "start end" "msgs msgs"; gap: 4px 16px; align-items: start; }
 .dialog-body.assembly .end-card.start { grid-area: start; }
 .dialog-body.assembly .end-card.end { grid-area: end; }
 .dialog-body.assembly .member-setup { grid-area: setup; display: flex; flex-wrap: wrap; gap: 0 18px; }
 .dialog-body.assembly .member-setup .main-member { flex: 0 1 300px; min-width: 240px; }
 .dialog-body.assembly .member-setup .placement-col { flex: 1 1 240px; }
-@media (max-width: 1100px) {
-  .dialog-body.assembly { grid-template-columns: 1fr 1fr; grid-template-areas: "view view" "start end" "setup setup" "msgs msgs";
-    grid-template-rows: none; }
-}
-@media (max-width: 700px) {
-  .dialog-body.assembly { grid-template-columns: minmax(0, 1fr); grid-template-areas: "view" "start" "end" "setup" "msgs"; }
+@media (max-width: 900px) {
+  .dialog-body.assembly { grid-template-columns: minmax(0, 1fr); grid-template-areas: "setup" "view" "start" "end" "msgs"; }
 }
 .mini-view { position: relative; flex: 1; min-height: 340px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .mini-view canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
