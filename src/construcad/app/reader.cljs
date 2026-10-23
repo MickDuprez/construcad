@@ -13,6 +13,7 @@
   (:require ["three" :as THREE]
             ["three-bvh-csg" :refer [Brush Evaluator SUBTRACTION ADDITION INTERSECTION]]
             [construcad.app.slice :as slice]
+            [construcad.edges :as edges]
             [modeller.frame :as frame]
             [modeller.profile :as profile]))
 
@@ -93,6 +94,14 @@
 
 ;; --- display objects -------------------------------------------------------------
 
+(defn- edges-geometry
+  "Feature edges of a solid's soup. Not THREE.EdgesGeometry: booleans leave
+  T-junctions on flat faces that it draws as triangulation (construcad.edges)."
+  [^js geometry]
+  (let [segs (edges/feature-edges (.. geometry -attributes -position -array) 20)]
+    (doto (THREE/BufferGeometry.)
+      (.setAttribute "position" (THREE/Float32BufferAttribute. segs 3)))))
+
 (defn- solid-object [instr]
   (let [geometry (doto (solid-geometry instr) (.computeVertexNormals))
         group (THREE/Group.)
@@ -101,7 +110,7 @@
                            #js {:color (:face colours) :roughness 0.85 :metalness 0.05
                                 :side THREE/DoubleSide
                                 :polygonOffset true :polygonOffsetFactor 1 :polygonOffsetUnits 1}))
-        edges-geometry (THREE/EdgesGeometry. geometry 20)
+        edges-geometry (edges-geometry geometry)
         edges (THREE/LineSegments. edges-geometry (THREE/LineBasicMaterial. #js {:color (:edge colours)}))
         ;; Mick's hidden-line approach from schemacraft-viewer: the same edges
         ;; again, dashed, drawn only where something is in front of them.
