@@ -32,16 +32,39 @@
     (set! (.-near camera) 1)
     (set! (.-far camera) (* 10 span))
     (set! (.-zoom camera) 1)
-    (set-frustum! view (* 0.55 span))
     (.copy (.-target controls) centre)
     (.lookAt camera centre)
+    (.updateMatrixWorld camera)
+    ;; fit what is shown as the camera sees it, not its diagonal, so a long
+    ;; member fills a wide view
+    (let [[w h] (size (:el @view))
+          a (/ w h)
+          inv (.-matrixWorldInverse camera)
+          lo (.-min box) hi (.-max box)
+          half (if empty?
+                 (* 0.55 span)
+                 (reduce max 1 (for [x [(.-x lo) (.-x hi)] y [(.-y lo) (.-y hi)] z [(.-z lo) (.-z hi)]
+                                     :let [p (.applyMatrix4 (THREE/Vector3. x y z) inv)]]
+                                 (max (js/Math.abs (.-y p)) (/ (js/Math.abs (.-x p)) a)))))]
+      (set-frustum! view (* 1.12 half)))
     (.update controls)
     (swap! view assoc :dir dir)))
 
+(defn- node-marker
+  "A small ball at an XLine node, drawn through the solids like the XLine."
+  [[x y z] radius]
+  (let [o (THREE/Mesh. (THREE/SphereGeometry. radius 16 12)
+                       (THREE/MeshBasicMaterial. #js {:color (:xline reader/colours) :depthTest false
+                                                      :transparent true}))]
+    (.set (.-position o) x y z)
+    (set! (.-renderOrder o) 11)
+    o))
+
 (defn show!
-  "Replace what the view shows with these instructions ({id instr}). Fits
-  the view the first time, or when `fit?`."
-  [view instructions & {:keys [fit?]}]
+  "Replace what the view shows with these instructions ({id instr}), and a
+  marker at each of `nodes` (XLine nodes, [x y z]). Fits the view the first
+  time, or when `fit?`."
+  [view instructions & {:keys [fit? nodes]}]
   (let [{:keys [^js root shown?]} @view]
     (doseq [^js o (vec (array-seq (.-children root)))] (reader/dispose! o))
     (doseq [[id instr] instructions]
@@ -50,6 +73,10 @@
                        (when (= "hidden-edge" (gobj/get (.-userData n) "renderRole"))
                          (set! (.-visible n) false))))
         (.add root o)))
+    (when (seq nodes)
+      (let [span (reduce max 0 (for [a nodes b nodes] (js/Math.hypot (- (a 0) (b 0)) (- (a 1) (b 1)) (- (a 2) (b 2)))))
+            r (max 12 (* 0.008 span))]
+        (doseq [p nodes] (.add root (node-marker p r)))))
     (when (or fit? (not shown?))
       (look! view (:dir @view))
       (swap! view assoc :shown? true))))
@@ -76,9 +103,14 @@
     (.addEventListener (.-domElement renderer) "contextmenu" #(.preventDefault %))
     (.append el (.-domElement renderer))
     (let [resize! (fn []
-                    (let [[w h] (size el)]
+                    (let [[w h] (size el)
+                          laid-out? (and (> w 1) (> h 1))]
                       (.setSize renderer w h false)
-                      (set-frustum! view (.-top camera))))
+                      (set-frustum! view (.-top camera))
+                      ;; shown before the canvas had a size: fit again now it has one
+                      (when (and laid-out? (:shown? @view) (not (:fitted? @view)))
+                        (look! view (:dir @view)))
+                      (when laid-out? (swap! view assoc :fitted? (boolean (:shown? @view))))))
           observer (js/ResizeObserver. resize!)]
       (.observe observer el)
       (swap! view assoc :observer observer)

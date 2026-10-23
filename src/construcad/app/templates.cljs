@@ -82,8 +82,8 @@
                                           (default-sizes kind draft)))
     (render!)))
 
-(defn- instance-dlg [{:keys [state supports]} info]
-  {:kind :instance :draft state :supports supports :info info
+(defn- instance-dlg [{:keys [state supports context]} info]
+  {:kind :instance :draft state :supports supports :context context :info info
    :rotation (:rotation info) :rotation-was (:rotation info)})
 
 (defn open-assembly!
@@ -456,8 +456,25 @@
 (defn- regen-messages [errors]
   (messages (map regen-error-text (remove :param errors))))
 
+(defn- member-preview
+  "The 3D preview of the member alone: main part, plates, bolts, holes and
+  cuts as its connections made them, its XLine as a thin line with a ball at
+  each node. Nothing it connects to is drawn."
+  [{:keys [instructions nodes]} note]
+  (let [views (te/preview-views nodes)
+        host (preview-host! (second (first views)))]
+    (show-preview! instructions :nodes nodes)
+    (h :section {:class "member-preview"}
+       (h :div {:class "row"}
+          (h :h3 {} "3D preview")
+          (h :span {:class "grow"})
+          (view-buttons views))
+       host
+       (h :p {:class "muted small"} note))))
+
 (defn- assembly-builder [{:keys [draft size error saving?] :as dlg}]
-  (let [{:keys [errors]} (te/assembly-preview @lib (:templates @env*) draft {:size size})]
+  (let [{:keys [errors] :as preview} (te/assembly-preview @lib (:templates @env*) draft
+                                                          {:size size :support-size (:support-size dlg)})]
     (h :div {:class "dialog assembly-builder"}
        (h :header {}
           (h :h2 {} (if (:template/id draft) "Assembly template" "New assembly template"))
@@ -476,6 +493,10 @@
                                (h :div {:class "row"} "Preview size "
                                   (size-select "size" size #(update-top! assoc :size %)
                                                (sizes-for (:template/role draft)))))
+          (member-preview preview
+                          (str "The member alone, on a " (fmt te/preview-length) " mm XLine (the thin line, a ball at each node). "
+                               "An end with a connection is made against a " (:support-size dlg)
+                               " column, as in the connection editor, which isn't drawn."))
           (h :div {:class "ends"}
              (end-card :start dlg size)
              (end-card :end dlg size))
@@ -507,9 +528,10 @@
        (h :button {:on-click #(update-top! dissoc :apply)} "Close")
        (h :span {:class "muted small"} "Replaces the placement and both ends with the template's; unsaved changes here are lost."))))
 
-(defn- assembly-instance [{:keys [draft info rotation error saving? apply] :as dlg}]
+(defn- assembly-instance [{:keys [draft info rotation error saving? apply context] :as dlg}]
   (let [size (:assembly/size draft)
-        role (:xline/role draft :beam)]
+        role (:xline/role draft :beam)
+        preview (when context (te/instance-preview @lib (:templates @env*) context draft))]
     (h :div {:class "dialog assembly-builder"}
        (h :header {}
           (h :h2 {} "Assembly")
@@ -538,9 +560,14 @@
                                     (h :span {:class "muted"} "custom section")
                                     (size-select "size" size #(update-draft! assoc :assembly/size %)
                                                  (sizes-for role)))))
+          (when preview
+            (member-preview preview
+                            (str "This assembly alone, as Save would make it, on its XLine (the thin line, a ball at each node). "
+                                 "What its ends sit on isn't drawn.")))
           (h :div {:class "ends"}
              (end-card :start dlg size)
-             (end-card :end dlg size))))))
+             (end-card :end dlg size))
+          (h :div {:class "messages"} (regen-messages (:errors preview)))))))
 
 ;; --- dialog and library panel -----------------------------------------------------------
 
@@ -551,7 +578,7 @@
                    (swap! ui* assoc :root el)
                    el))
         dlg (top)]
-    (when-not (= :connection (:kind dlg)) (drop-preview!))
+    (when-not dlg (drop-preview!))
     (if-not dlg
       (do (set! (.. root -style -display) "none")
           (.replaceChildren root))

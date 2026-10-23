@@ -35,8 +35,8 @@ In the editor:
 - **XLine** draws a new member: pick its role under **New XLines are**
   (column, beam, rafter, joist, purlin, girt, brace, panel; beam by default),
   then click a start and an end (same snaps), or type coordinates;
-  `@dx,dy,dz` for the end is relative to the start. A beam drawn at one grid
-  intersection (both ends on it) is a column. The grid is drawn, and grid
+  `@dx,dy,dz` for the end is relative to the start. The member always gets
+  the picked role, whichever way it runs. The grid is drawn, and grid
   snaps sit, at the working level ticked in the Levels panel. Esc cancels.
 - **Right-click** a member (or **Edit…** under Selection) for **Edit
   assembly**: the assembly page for that member (see Templates). The side
@@ -64,7 +64,12 @@ end plate with four bolts, and beams and a column built from them).
   up, across the view is the XLine's local X), where you click one of the
   nine points to put it on the XLine (the cross), type the offsets, pick a
   rotation (0/90/180/270 or typed) and the extensions, beside a side
-  elevation of the member alone. The **Start** and **End** cards pick a
+  elevation of the member alone. Below them a **3D preview** shows the
+  member and its own parts (plates, bolts, holes, end cuts) as its
+  connections make them, and its XLine as a thin line with a ball at each
+  node, so offsets and extensions show against it. An end with a connection
+  is made against a sample column (the connection editor's default
+  support), which is not drawn. The **Start** and **End** cards pick a
   connection template (or none) and take per-end overrides of its
   parameters, with a link to the connection editor, which opens on top and
   returns to the page. A card can't know what its end will sit on, so a
@@ -93,7 +98,11 @@ end plate with four bolts, and beams and a column built from them).
   runs `modeller.template/assembly-state`). It adds the mark, role and size,
   the XLine's ends, length and rotation, says which template the member came
   from, and each card says what that end sits on and resolves the parameters
-  against it. **Save** sends `:assembly/update` (and `:xline/set-rotation`
+  against it. Its 3D preview is the member as Save would make it,
+  regenerated in the browser against what its ends really sit on (the page
+  data carries that context: the XLine, the XLines its nodes hang off, the
+  grid and levels, its connections), still drawn alone.
+  **Save** sends `:assembly/update` (and `:xline/set-rotation`
   if that changed); a hand-edited assembly detaches from its template
   (template edits no longer change it; it remembers where it came from).
   **Apply template…** applies a template at a size to this member instead.

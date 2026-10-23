@@ -3,6 +3,7 @@
             [construcad.edits :as edits]
             [construcad.records :as records]
             [construcad.seed :as seed]
+            [construcad.template-edit :as te]
             [modeller.template]
             [modeller.library :as library]
             [modeller.sections-au :as au]
@@ -237,3 +238,26 @@
         (is (= :column (get-in supports [end :xline/role])))
         (is (string? (get-in supports [end :size])))))
     (is (nil? (edits/assembly-page m (random-uuid))))))
+
+(deftest assembly-preview-context
+  (let [{m :model} (seeded)
+        b2 (by-mark m "B2")
+        {:keys [state context]} (edits/assembly-page m b2)
+        supports (set (vals (:supports state)))]
+    (testing "the context holds the member and what its nodes hang off, nothing else"
+      (is (= (conj supports b2) (set (keys (:xlines context)))))
+      (is (every? #(= b2 (:connection/owner %)) (vals (:connections context))))
+      (is (= 2 (count (:connections context)))))
+    (testing "regenerated in the browser, the member alone matches the server's result"
+      (let [{:keys [instructions nodes errors]} (te/instance-preview lib (:templates m) context state)
+            real (get-in (edits/view m [b2]) [:instructions b2])]
+        (is (empty? errors))
+        (is (= [b2] (keys instructions)))
+        (is (= real (get instructions b2)))
+        (is (= 2 (count nodes)))))
+    (testing "a draft change shows before it is saved"
+      (let [{:keys [instructions]} (te/instance-preview lib (:templates m) context
+                                                        (assoc state :assembly/size "250UB31.4" :start nil))
+            parts (set (map :id (get-in instructions [b2 :child :children])))]
+        (is (not (contains? parts :plate-start)))))))
+

@@ -69,18 +69,39 @@
       (is (= [:plate-h] (map :param (:errors (te/resolve-for lib draft {} "310UB40.4" "200UC46.2"))))))))
 
 (deftest assembly-previews
-  (testing "the member alone: nothing at its ends, so no connection parts"
-    (let [{:keys [instructions errors]}
+  (testing "ends with a connection sit on sample columns, which are never returned"
+    (let [{:keys [instructions nodes errors]}
           (te/assembly-preview lib templates (:beam-plates templates) {:size "250UB31.4"})
           member (:member instructions)]
       (is (empty? errors))
+      (is (= #{:member} (set (keys instructions))))
       (is (part member :main))
-      (is (nil? (part member :plate-start)))
-      (is (nil? (part member :plate-end)))))
+      (is (part member :plate-start))
+      (is (part member :plate-end))
+      (testing "the XLine's nodes, for the preview to mark"
+        (is (= [[0.0 0.0 3000.0] [3000.0 0.0 3000.0]] (mapv #(mapv double %) nodes))))))
+  (testing "a plain end is left as it is"
+    (let [{:keys [instructions]} (te/assembly-preview lib templates (dissoc (:beam-plates templates) :template/end)
+                                                      {:size "250UB31.4"})]
+      (is (part (:member instructions) :plate-start))
+      (is (nil? (part (:member instructions) :plate-end)))))
   (testing "a column template stands alone"
     (let [{:keys [instructions errors]} (te/assembly-preview lib templates (:column templates) {:size "200UC46.2"})]
       (is (empty? errors))
       (is (= #{:member} (set (keys instructions)))))))
+
+(deftest preview-view-directions
+  (let [near3? (fn [a b] (every? true? (map #(v/nearly= %1 %2 1e-9) a b)))
+        dir (fn [nodes label] (some #(when (= label (first %)) (second %)) (te/preview-views nodes)))]
+    (is (= ["Iso" "Plan" "Side" "End"] (map first (te/preview-views [[0 0 3000] [3000 0 3000]]))))
+    (is (near3? [1 -1.4 0.9] (dir [[0 0 3000] [3000 0 3000]] "Iso")))
+    (is (near3? [0 -1 0] (dir [[0 0 3000] [3000 0 3000]] "Side")))
+    (is (near3? [-1 0 0] (dir [[0 0 3000] [3000 0 3000]] "End")))
+    (testing "square to an XLine running along -Y"
+      (is (near3? [0 1 0] (dir [[0 0 0] [0 -8000 0]] "End")))
+      (is (near3? [-1 0 0] (dir [[0 0 0] [0 -8000 0]] "Side"))))
+    (testing "a vertical XLine is seen as if it ran along X"
+      (is (near3? [0 -1 0] (dir [[0 0 0] [0 0 4200]] "Side"))))))
 
 (deftest end-conditions
   (let [condition {:connection/template :end-plate :connection/params {:plate-t 16}}

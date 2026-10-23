@@ -315,14 +315,32 @@
      :xlines (xline-summary (:xlines m) ids)
      :errors errors}))
 
+(defn assembly-context
+  "The records one assembly's regeneration needs: its XLine and every XLine
+  its nodes depend on (transitively), the grid and levels they resolve
+  against, and the connections it owns. Templates are left out; the page
+  has them."
+  [m id]
+  (let [xlines (:xlines m)
+        ids (loop [seen #{} queue [id]]
+              (if-let [x (first queue)]
+                (recur (conj seen x) (into (subvec queue 1)
+                                           (remove seen (filter xlines (model/xline-deps (xlines x))))))
+                seen))]
+    {:grid (:grid m) :levels (:levels m)
+     :xlines (select-keys xlines ids)
+     :connections (into {} (filter #(= id (:connection/owner (val %)))) (:connections m))}))
+
 (defn assembly-page
   "What the assembly page needs to edit one assembly: its state
-  (modeller.template/assembly-state) and, for each end that sits on another
-  XLine, that XLine's mark, role and size, so the page can resolve the
-  connection's parameters against the real support. nil for an unknown id."
+  (modeller.template/assembly-state), for each end that sits on another
+  XLine that XLine's mark, role and size, so the page can resolve the
+  connection's parameters against the real support, and the context its
+  preview regenerates in. nil for an unknown id."
   [m id]
   (when-let [state (template/assembly-state m id)]
     {:state state
+     :context (assembly-context m id)
      :supports (into {} (for [end [:start :end]
                               :let [sid (get-in state [:supports end])
                                     x (get-in m [:xlines sid])]

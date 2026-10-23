@@ -7,9 +7,10 @@
   another, arranged as a vertical column (an XLine of 3 m, rolled 90 degrees
   so the owner meets a flange face) or as a horizontal beam the owner frames
   into at 90 degrees (a joist into a beam). Both hang off their XLines by the
-  top centre, as beams in the demo bay do. An assembly template is shown on
-  its member alone: a connection template knows nothing of member roles,
-  only the two ECSs it joins."
+  top centre, as beams in the demo bay do. The assembly page shows its
+  member alone, with whatever its connections did to it: a template's ends
+  sit on sample columns, an assembly's on what they really sit on, but
+  neither support is drawn."
   (:require [clojure.string :as str]
             [modeller.assembly :as assembly]
             [modeller.core :as core]
@@ -204,19 +205,72 @@
 
 (def preview-length 3000)
 
+(defn- member-only
+  "The member's own regeneration, nothing around it: its instruction (main
+  part, plates, bolts, holes, cuts), its XLine's two nodes for the preview
+  to mark, and its errors. Whatever its ends sit on is in `m` only so the
+  connections can be worked out; it is never drawn."
+  [m id]
+  (let [{:keys [resolved instructions errors]} (core/regenerate m [id])
+        {:keys [start end]} (get resolved id)]
+    {:instructions (select-keys instructions [id])
+     :nodes (if start [start end] [])
+     :errors errors
+     :model m}))
+
 (defn assembly-preview
-  "The draft assembly template applied at `size` to its member alone, on an
-  XLine with nothing at either end, so no connection is made: what the
-  template does to the member itself. {:instructions :errors :model}."
-  [lib templates draft {:keys [size length] :or {length preview-length}}]
+  "The draft assembly template applied at `size` to a member on an XLine of
+  `length`. An end with a connection sits on a sample support (a vertical
+  column of `support-size`, as the connection editor shows by default) so
+  the connection is made, but only the member is returned: what the template
+  does to the member itself. {:instructions {:member i} :nodes [start end]
+  :errors :model}."
+  [lib templates draft {:keys [size support-size length] :or {length preview-length support-size "200UC46.2"}}]
   (let [id (or (:template/id draft) :preview/draft)
         draft (assoc draft :template/id id)
+        z column-height
+        node (fn [end x]
+               (if (get draft (if (= :start end) :template/start :template/end))
+                 {:node/of (keyword "support" (name end)) :node/end :end}
+                 {:node/at [x 0 z]}))
         m (base-model lib (assoc templates id draft)
-                      [(beam :member {:node/at [0 0 0]} {:node/at [length 0 0]} size)])
-        r (template/apply-template m :member draft size (constantly :preview/conn))]
+                      [(column :support/start 0 support-size) (column :support/end length support-size)
+                       (beam :member (node :start 0) (node :end length) size)])
+        r (template/apply-template m :member draft size (let [n (atom 0)] #(keyword "preview" (str "conn" (swap! n inc)))))]
     (if (:error r)
-      {:instructions {} :errors [(:error r)] :model m}
-      (regenerated (:model r) {}))))
+      {:instructions {} :nodes [] :errors [(:error r)] :model m}
+      (member-only (:model r) :member))))
+
+(defn instance-preview
+  "One assembly as the assembly page would save it: `state` applied to
+  `context` (the records its regeneration needs, construcad.edits/assembly-
+  context) and regenerated with the real core, the member alone.
+  {:instructions {id i} :nodes [start end] :errors :model}."
+  [lib templates context state]
+  (let [id (:xline/id state)
+        m (merge context {:builders (:builders lib) :sections (:sections lib)
+                          :templates (merge templates (:templates context))})
+        r (template/update-assembly m (update state :main #(merge default-main %))
+                                    (let [n (atom 0)] #(keyword "preview" (str "conn" (swap! n inc)))))]
+    (if (:error r)
+      {:instructions {} :nodes [] :errors [(:error r)] :model m}
+      (member-only (:model r) id))))
+
+(defn preview-views
+  "Named view directions (eye side) for the member preview, square to its
+  XLine from `nodes` [start end]: along it, beside it (start on the left),
+  from above, and an iso between. A vertical or missing XLine is seen as if
+  it ran along X."
+  [[start end]]
+  (let [d (when (and start end) (mapv - end start))
+        [ax ay] (if d (let [l (Math/sqrt (+ (* (d 0) (d 0)) (* (d 1) (d 1))))]
+                        (if (> l 1e-6) [(/ (d 0) l) (/ (d 1) l)] [1 0]))
+                    [1 0])
+        side [ay (- ax) 0]]
+    [["Iso" [(+ ax (* 1.4 (side 0))) (+ ay (* 1.4 (side 1))) 0.9]]
+     ["Plan" [0 0 1]]
+     ["Side" side]
+     ["End" [(- ax) (- ay) 0]]]))
 
 (defn save-edits
   "The edits that save the assembly page of one assembly: the XLine's
