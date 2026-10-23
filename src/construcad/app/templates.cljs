@@ -111,6 +111,16 @@
     :param/not-a-number "does not give a number"
     (pr-str e)))
 
+(defn- regen-error-text
+  "A regeneration error from a preview, in words where we know it."
+  [{:keys [action] :as e}]
+  (let [what (some-> action :action/type name)]
+    (case (:error/type e)
+      :action/no-plate "Bolt group: there is no end plate before it in this template to bolt through."
+      :action/missing-input (str what ": the member or the supporting face isn't there.")
+      :action/unknown (str "Unknown action " what ".")
+      (pr-str e))))
+
 (defn- preview-host!
   "The canvas host for the open editor's 3D preview, created once per editor
   and reused across re-renders so the WebGL context survives typing."
@@ -220,7 +230,7 @@
                 " into column " (size-select "support-size" support-size #(update-top! assoc :support-size %)))
              (view-buttons [["Iso" [1 -1.4 0.9]] ["Plan" [0 0 1]] ["Side" [0 -1 0]] ["End" [-1 0 0]]])
              host
-             (messages (map pr-str other-errors)))))))
+             (messages (map regen-error-text other-errors)))))))
 
 ;; --- assembly template builder ---------------------------------------------------------
 
@@ -341,7 +351,7 @@
              (view-buttons [["Side" side] ["Iso" [1 -1.4 0.9]] ["Plan" [0 0 1]]])
              host
              (messages (concat (map #(str "The " (name (:end %)) " is not on another XLine: no connection there.") warnings)
-                               (map pr-str errors))))
+                               (map regen-error-text (remove :param errors)))))
           (h :div {:class "ends"}
              (end-card :start dlg)
              (end-card :end dlg))))))
