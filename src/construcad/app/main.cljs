@@ -23,6 +23,7 @@
          :selected nil      ; the assembly the grips and properties are for
          :selection #{}     ; every selected assembly (Shift + click adds)
          :apply {}          ; {:template-id :size} chosen in the panel
+         :xline-role :beam  ; role the XLine tool gives new members
          :xline-start nil   ; first pick of the XLine tool
          :drag nil          ; grip being dragged
          :command nil       ; grip waiting for typed coordinates
@@ -138,12 +139,22 @@
                      false))))
       (.catch #(do (set-status! (str "Edit failed: " %)) false))))
 
+(defn load-assembly!
+  "A promise of one assembly's page data (construcad.edits/assembly-page), or nil."
+  [id]
+  (-> (fetch-edn (str "/api/buildings/" (:building-id @state*) "/assemblies/" id) {})
+      (.then (fn [[status page]]
+               (if (= 200 status)
+                 page
+                 (do (set-status! (str "Could not load the assembly: " (pr-str (:error page)))) nil))))))
+
 (defn load-templates! []
   (-> (fetch-edn (str "/api/buildings/" (:building-id @state*) "/templates") {})
       (.then (fn [[status {:keys [templates sections]}]]
                (when (= 200 status)
                  (swap! templates/env* assoc :sections sections
-                        :save! #(send-edit! {:edit/type :template/save :template %}))
+                        :send! send-edit!
+                        :load-assembly! load-assembly!)
                  (templates/templates-changed! templates)
                  (render-panel!))))))
 
@@ -253,8 +264,10 @@
   (update-overlays!))
 
 (defn- create-xline! [start end]
-  ;; Same grid intersection at both ends: a column. Anything else: a beam.
-  (let [role (if (and (:node/grid start) (= (:node/grid start) (:node/grid end))) :column :beam)]
+  ;; The role picked for the tool. A beam drawn at one grid intersection
+  ;; (both ends on the same grid point, so vertical) is a column.
+  (let [picked (:xline-role @state*)
+        role (if (and (= :beam picked) (:node/grid start) (= (:node/grid start) (:node/grid end))) :column picked)]
     (send-edit! {:edit/type :xline/create :start start :end end :role role})))
 
 (defn- grip-under [cursor]
@@ -270,7 +283,25 @@
   (let [p (resolved-end id end)]
     (snap-at cursor (snap/excluded (get-in @state* [:view :xlines]) id) (grip-level p) (nth p 2))))
 
+(defn- hide-menu! []
+  (when-let [el (:menu @ui*)] (.remove el) (swap! ui* dissoc :menu)))
+
+(declare edit-assembly!)
+
+(defn- show-menu!
+  "The viewport's context menu for the selected member, at the cursor."
+  [^js e id]
+  (hide-menu!)
+  (let [el (h :div {:class "context-menu"
+                    :style (str "left:" (.-clientX e) "px;top:" (.-clientY e) "px")}
+              (h :div {:class "muted small"} (mark id))
+              (h :button {:on-click #(do (hide-menu!) (edit-assembly! id))} "Edit assembly"))]
+    (.append (.-body js/document) el)
+    (swap! ui* assoc :menu el)))
+
 (defn on-pointer-down [^js e]
+  (when (= 2 (.-button e))
+    (swap! ui* assoc :right-down (vp/pointer e)))
   (when (= 0 (.-button e))
     (let [cursor (vp/pointer e)
           {:keys [tool xline-start]} @state*]
@@ -301,7 +332,20 @@
       (= :xline tool) (do (swap! state* assoc :snap (snap-at cursor #{} (active-level) (:level/elevation (active-level) 0)))
                           (update-overlays!)))))
 
+(defn- right-click!
+  "A right click without a drag (a right drag pans) on a member selects it,
+  unless it is already selected, and opens the context menu."
+  [^js e]
+  (let [[fx fy] (:right-down @ui*) [cx cy :as cursor] (vp/pointer e)]
+    (swap! ui* dissoc :right-down)
+    (when (and fx (< (+ (js/Math.abs (- cx fx)) (js/Math.abs (- cy fy))) 4) (= :select (:tool @state*)))
+      (let [s (vp/pick cursor)]
+        (when-let [id (some #(when (= (str %) s) %) (keys (:objects @state*)))]
+          (when-not (contains? (:selection @state*) id) (select! id))
+          (show-menu! e id))))))
+
 (defn on-pointer-up [^js e]
+  (when (and (= 2 (.-button e)) (:right-down @ui*)) (right-click! e))
   (when-let [{:keys [id end moved?]} (:drag @state*)]
     (let [s (:snap @state*)]
       (swap! state* assoc :drag nil :snap nil)
@@ -343,6 +387,7 @@
 
 (defn on-key-down [^js e]
   (when (= "Escape" (.-key e))
+    (hide-menu!)
     (cancel!)
     (set-status! "Cancelled")))
 
@@ -417,29 +462,36 @@
                   (axes "x-axes (offset along x)" :grid/x-axes)
                   (axes "y-axes (offset along y)" :grid/y-axes))))))
 
+(defn edit-assembly!
+  "Open the assembly page for one assembly, in instance mode."
+  [id]
+  (let [{:keys [view]} @state*
+        x (get-in view [:xlines id])]
+    (when x
+      (templates/open-assembly! id {:start (ref-text (:xline/start x))
+                                    :end (ref-text (:xline/end x))
+                                    :length (get-in view [:resolved id :length] 0)
+                                    :rotation (:xline/rotation x 0)}))))
+
 (defn- selection-section []
   (let [{:keys [selected view]} @state*
-        x (get-in view [:xlines selected])
-        r (get-in view [:resolved selected])]
+        x (get-in view [:xlines selected])]
     (section "Selection"
              (if-not x
                (h :p {:class "muted"} "Nothing selected.")
-               (h :table {}
-                  (h :tr {} (h :th {} "Mark") (h :td {} (str (:assembly/mark x) " (" (name (:xline/role x :xline)) ")")))
-                  (h :tr {} (h :th {} "Start") (h :td {} (ref-text (:xline/start x))))
-                  (h :tr {} (h :th {} "End") (h :td {} (ref-text (:xline/end x))))
-                  (h :tr {} (h :th {} "Length") (h :td {} (str (js/Math.round (:length r 0)) " mm")))
-                  (h :tr {} (h :th {} "Template")
-                     (h :td {} (if-let [t (:assembly/template x)]
-                                 (h :a {:href "#" :on-click (fn [e] (.preventDefault e)
-                                                              (some-> (get-in @templates/env* [:templates t]) templates/open!))}
-                                    (or (templates/template-name t) "(unknown)"))
-                                 "—")))
-                  (h :tr {} (h :th {} "Size") (h :td {} (or (:assembly/size x) "—")))
-                  (h :tr {} (h :th {} "Rotation")
-                     (h :td {} (number-input (:xline/rotation x 0)
-                                             #(send-edit! {:edit/type :xline/set-rotation
-                                                           :xline/id selected :rotation %})))))))))
+               (list
+                (h :table {}
+                   (h :tr {} (h :th {} "Mark") (h :td {} (:assembly/mark x)))
+                   (h :tr {} (h :th {} "Role") (h :td {} (name (:xline/role x :xline))))
+                   (h :tr {} (h :th {} "Size") (h :td {} (let [sz (:assembly/size x)] (if (string? sz) sz "—"))))
+                   (h :tr {} (h :th {} "Template")
+                      (h :td {} (cond
+                                  (:assembly/template x) (or (templates/template-name (:assembly/template x)) "(unknown)")
+                                  (:assembly/from-template x) (str "edited, from "
+                                                                   (or (templates/template-name (:assembly/from-template x)) "(unknown)"))
+                                  :else "—"))))
+                (h :div {:class "buttons"}
+                   (h :button {:on-click #(edit-assembly! selected) :title "Or right-click the member"} "Edit…")))))))
 
 (defn- apply-section
   "Apply an assembly template at a size to every selected member."
@@ -494,6 +546,11 @@
                    (tool-button :select "Select")
                    (tool-button :xline "XLine")
                    (h :button {:on-click vp/zoom-extents!} "Zoom extents"))
+                (h :label {:class "row" :title "The role new XLines get. A beam drawn at one grid intersection is a column."}
+                   "New XLines are "
+                   (h :select {:on-change #(swap! state* assoc :xline-role (keyword (.. % -target -value)))}
+                      (for [[r label] te/role-names]
+                        (h :option {:value (name r) :selected (= r (:xline-role @state*))} label))))
                 (h :label {:class "row"} "Display "
                    (h :select {:on-change #(vp/set-display! (keyword (.. % -target -value)))}
                       (for [[k label] [[:hidden-line "Hidden line"] [:shaded "Shaded"] [:wireframe "Wireframe"]]]
@@ -540,6 +597,10 @@
     (.addEventListener js/window "pointerup" on-pointer-up)
     (.addEventListener canvas "lostpointercapture" on-pointer-up)
     (.addEventListener js/document "keydown" on-key-down)
+    ;; Any press outside the context menu closes it.
+    (.addEventListener js/document "pointerdown"
+                       (fn [e] (when-not (some-> ^js (:menu @ui*) (.contains (.-target e))) (hide-menu!)))
+                       true)
     (-> (fetch-edn "/api/buildings" {})
         (.then (fn [[_ buildings]]
                  (let [id (:xt/id (first buildings))]
