@@ -9,9 +9,9 @@
 
 (defn- size [^js el] [(max 1 (.-clientWidth el)) (max 1 (.-clientHeight el))])
 
-(defn- set-frustum! [view half-height]
+(defn- set-frustum! [view half-height & [aspect]]
   (let [{:keys [^js camera el]} @view
-        [w h] (size el) a (/ w h)]
+        [w h] (size el) a (or aspect (/ w h))]
     (set! (.-top camera) half-height)
     (set! (.-bottom camera) (- half-height))
     (set! (.-left camera) (- (* half-height a)))
@@ -19,8 +19,9 @@
     (.updateProjectionMatrix camera)))
 
 (defn look!
-  "Look along `dir` (eye side) at everything shown, fitted to the view."
-  [view [dx dy dz :as dir]]
+  "Look along `dir` (eye side) at everything shown, fitted to the view (or
+  to a frame of `aspect`, width over height)."
+  [view [dx dy dz :as dir] & {:keys [aspect]}]
   (let [{:keys [^js camera ^js controls ^js root]} @view
         box (.setFromObject (THREE/Box3.) root)
         empty? (.isEmpty box)
@@ -38,7 +39,7 @@
     ;; fit what is shown as the camera sees it, not its diagonal, so a long
     ;; member fills a wide view
     (let [[w h] (size (:el @view))
-          a (/ w h)
+          a (or aspect (/ w h))
           inv (.-matrixWorldInverse camera)
           lo (.-min box) hi (.-max box)
           half (if empty?
@@ -46,7 +47,7 @@
                  (reduce max 1 (for [x [(.-x lo) (.-x hi)] y [(.-y lo) (.-y hi)] z [(.-z lo) (.-z hi)]
                                      :let [p (.applyMatrix4 (THREE/Vector3. x y z) inv)]]
                                  (max (js/Math.abs (.-y p)) (/ (js/Math.abs (.-x p)) a)))))]
-      (set-frustum! view (* 1.12 half)))
+      (set-frustum! view (* 1.12 half) a))
     (.update controls)
     (swap! view assoc :dir dir :moved? false)))
 
@@ -125,6 +126,41 @@
                 (.render renderer scene camera)))]
       (frame!))
     view))
+
+(defn snapshot
+  "A small PNG data URL, `w` x `h`, of what the view shows, seen from where
+  the camera is now but fitted to that frame, for a template's thumbnail.
+  The view is put back as it was."
+  [view w h]
+  (let [{:keys [^js renderer ^js scene ^js camera ^js controls el]} @view
+        [vw vh] (size el)
+        eye (.sub (.clone (.-position camera)) (.-target controls))
+        saved {:position (.clone (.-position camera)) :target (.clone (.-target controls))
+               :zoom (.-zoom camera) :near (.-near camera) :far (.-far camera)
+               :frustum [(.-left camera) (.-right camera) (.-top camera) (.-bottom camera)]}
+        ^js src (.-domElement renderer)]
+    (.setSize renderer (* 2 w) (* 2 h) false)
+    (look! view [(.-x eye) (.-y eye) (.-z eye)] :aspect (/ w h))
+    (.render renderer scene camera)
+    (let [^js out (.createElement js/document "canvas")
+          _ (set! (.-width out) w)
+          _ (set! (.-height out) h)
+          ^js g (.getContext out "2d")]
+      (set! (.-imageSmoothingQuality g) "high")
+      (.drawImage g src 0 0 w h)
+      ;; back as it was
+      (.setSize renderer vw vh false)
+      (let [[l r t b] (:frustum saved)]
+        (set! (.-left camera) l) (set! (.-right camera) r) (set! (.-top camera) t) (set! (.-bottom camera) b))
+      (set! (.-zoom camera) (:zoom saved))
+      (set! (.-near camera) (:near saved))
+      (set! (.-far camera) (:far saved))
+      (.copy (.-position camera) (:position saved))
+      (.copy (.-target controls) (:target saved))
+      (.lookAt camera (:target saved))
+      (.updateProjectionMatrix camera)
+      (.update controls)
+      (.toDataURL out "image/png"))))
 
 (defn dispose! [view]
   (when view

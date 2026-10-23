@@ -246,12 +246,13 @@
     (not (or (nil? params) (map? params))) {:reason :bad-params}))
 
 (defn- condition-ok?
-  "An end condition: none, a copy that can be saved, or a library
+  "An end condition: none, a copy of known actions, or a library
   connection template to copy."
   [m c]
   (cond
     (nil? c) true
-    (contains? c :connection/actions) (nil? (copy-error c))
+    (contains? c :connection/actions) (and (sequential? (:connection/actions c))
+                                           (every? (comp known-actions :action/type) (:connection/actions c)))
     :else (= :connection (get-in m [:templates (:connection/template c) :template/kind]))))
 
 (defmethod plan* :assembly/update [m {state :state new-id :new-id}]

@@ -492,7 +492,8 @@
         xs (keep #(get-in view [:xlines %]) selection)
         role (:xline/role (get-in view [:xlines selected]))
         candidates (sort-by #(if (= role (:template/role %)) 0 1) (templates/templates-of :assembly))
-        current (let [ts (set (map :assembly/template xs))] (when (= 1 (count ts)) (first ts)))
+        current (let [ts (set (map #(or (get-in % [:assembly/from-template :template/id]) (:assembly/template %)) xs))]
+                  (when (= 1 (count ts)) (first ts)))
         tid (or (:template-id apply) current (:template/id (first candidates)))
         sizes (te/sizes-for-role (:sections @templates/env*)
                                  (get-in @templates/env* [:templates tid :template/role] role))
@@ -510,6 +511,8 @@
                      (for [t candidates]
                        (h :option {:value (str (:template/id t)) :selected (= tid (:template/id t))}
                           (:template/name t)))))
+               (when-let [src (get-in @templates/env* [:templates tid :template/thumbnail])]
+                 (h :img {:class "thumb" :src src :alt ""}))
                (h :label {:class "row"} "Size "
                   (h :select {:on-change (fn [e] (swap! state* assoc-in [:apply :size] (.. e -target -value)))}
                      (for [d sizes] (h :option {:value d :selected (= d size)} d))))
@@ -682,19 +685,22 @@
 
 (def part-labels {:main "Main member" :part "Part" :plate "End plate" :bolts "Bolts"})
 
-(defn- end-row [end {:keys [template-id template-name support]} size]
+(defn- end-row
+  "One end in the properties: its own connection by name, where it came
+  from, what it sits on, and a link to edit this assembly's copy."
+  [end {:keys [connection-id support from] cname :name} page]
   (h :div {:class "end-row"}
      (h :div {} (h :strong {} (if (= :start end) "Start " "End "))
-        (if template-name template-name (h :span {:class "muted"} "plain end")))
+        (if connection-id (or cname "unnamed connection") (h :span {:class "muted"} "plain end")))
+     (when from
+       (h :div {:class "muted small"} (str "from library: " (:name from))))
      (h :div {:class "muted small"}
         (if support
           (str "on " (:assembly/mark support) (when-let [s (:size support)] (str ", " s)))
           "not on another XLine"))
-     (when template-id
-       (h :a {:href "#" :on-click (fn [e] (.preventDefault e)
-                                    (templates/open-connection! template-id {:size size :support-size (:size support)
-                                                                             :support-role (:xline/role support)}))}
-          (str "Edit " (name end) " connection")))))
+     (when connection-id
+       (h :a {:href "#" :on-click (fn [e] (.preventDefault e) (templates/open-connection-instance! page end))}
+          (str "Edit " (name end) " connection…")))))
 
 (defn- properties-body []
   (let [{:keys [selected selection view pages]} @state*
@@ -717,16 +723,15 @@
             (h :tr {} (h :th {} "Template")
                (h :td {} (let [{:keys [kind] tname :name} (:template p)]
                            (case kind
-                             :template tname
-                             :edited (list (h :span {:class "muted"} "edited by hand, from ") tname)
+                             :from (list (h :span {:class "muted"} "from library: ") tname)
                              "—")))))
          (h :div {:class "buttons"}
             (h :button {:class "on" :on-click #(edit-assembly! selected) :title "Or double-click it in the tree"}
                "Edit assembly"))
          (h :h3 {} "Connections")
          (if (map? page)
-           (list (end-row :start (get-in p [:ends :start]) (:size p))
-                 (end-row :end (get-in p [:ends :end]) (:size p)))
+           (list (end-row :start (get-in p [:ends :start]) page)
+                 (end-row :end (get-in p [:ends :end]) page))
            (h :p {:class (if (= :failed page) "warn small" "muted small")}
               (if (= :failed page) "Could not load its connections." "Loading…")))
          (h :h3 {} "Parts")

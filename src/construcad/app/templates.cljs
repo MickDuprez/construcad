@@ -1,31 +1,40 @@
 (ns construcad.app.templates
   "The template library panel and the editors, shown as a dialog over the
-  editor:
+  editor. Templates are starting points: applying one copies it into the
+  assembly and its connections, so editing the library never changes an
+  assembly, and editing an assembly's connection never changes the library.
 
-  - the assembly page: top left the member end-on with its nine insertion
-    points, offset, rotation and extensions; top right one 3D view of the
-    member alone on its XLine, opening side-on (start on the left); below,
-    a Start and an End card that pick a connection template (or none) with
-    per-end overrides. It edits an assembly template,
-    or (instance mode) one assembly in the model, read from the server with
-    modeller.template/assembly-state, with its mark, role and size; Save
-    sends :assembly/update and Apply template... re-applies a template;
-  - the connection template editor: ordered actions, parameters as numbers
-    or formulas, and a 3D preview of an owner framing into a support (a
-    vertical column or a horizontal beam), sized from the library. This is
-    where a connection is seen: a connection template knows nothing of member
-    roles, only the two ECSs it joins and how.
+  - the assembly page, split in two: on the left the insertion panel (the
+    member end-on with its nine insertion points, offset, rotation and
+    extensions); on the right one 3D view of the member on its XLine,
+    opening side-on (start on the left), with the Start end's card on its
+    left edge and the End's on its right. A card shows the end's connection
+    by name (with the library template's thumbnail) and Edit connection….
+    It edits an assembly template (a sample member; a card picks a library
+    connection template), or (instance mode) one assembly in the model, read
+    from the server with modeller.template/assembly-state, with its mark,
+    role and size; Save sends :assembly/update and Re-apply from library…
+    copies a template again;
+  - the connection editor: ordered actions, parameters as numbers or
+    formulas, and a 3D preview. In library mode it edits a library template,
+    previewed on a sample owner framing into a sample support (a vertical
+    column or a horizontal beam); Save sends :template/save with a small
+    thumbnail of the preview. In instance mode it edits one assembly's own
+    copy of a connection, previewed on the real member and what it sits on;
+    Save sends :connection/update, and Save as new library template… puts
+    a copy in the library.
 
   Previews regenerate in the browser with the real core and the in-browser
   section library (construcad.template-edit); only Save goes to the server.
-  Editors stack: an end's connection template opens over the assembly page
-  and returns to it."
+  Editors stack: an end's connection opens over the assembly page and
+  returns to it."
   (:require [clojure.string :as str]
             [construcad.app.dom :as dom :refer [h s]]
             [construcad.app.mini-view :as mini-view]
             [construcad.template-edit :as te]
             [modeller.library :as library]
-            [modeller.sections-au :as au]))
+            [modeller.sections-au :as au]
+            [modeller.template :as template]))
 
 (defonce lib (delay (library/library {} au/rows)))
 
@@ -83,17 +92,18 @@
                                           (default-sizes kind draft)))
     (render!)))
 
-(defn open-connection!
-  "Open the connection editor on a connection template as one end of a
-  member uses it: the member's size framing into its support's, a column
-  or a beam as the support's role says."
-  [template-id {:keys [size support-size support-role]}]
-  (when-let [t (get-in @env* [:templates template-id])]
+(defn open-connection-instance!
+  "Open the connection editor in instance mode on one end of an assembly:
+  `page` is its page data (construcad.edits/assembly-page, or the assembly
+  page's own draft state with the same context), `end` :start or :end.
+  From the assembly page (`from-page?`), Save also puts the copy into the
+  page's draft."
+  [{:keys [state context supports]} end & {:keys [from-page?]}]
+  (when-let [copy (get state end)]
     (swap! dlg* update :stack conj
-           (cond-> {:kind :connection :draft t :arrangement (if (#{nil :column} support-role) :column :beam)
-                    :size "310UB40.4" :support-size "200UC46.2"}
-             (string? size) (assoc :size size)
-             (string? support-size) (assoc :support-size support-size)))
+           {:kind :conn-instance :draft (template/copy->template copy)
+            :from (:connection/from-template copy) :connection-id (:connection/id copy)
+            :end end :state state :context context :supports supports :from-page? from-page?})
     (render!)))
 
 (defn- instance-dlg [{:keys [state supports context]} info]
@@ -124,16 +134,72 @@
 
 (defn- refused! [] (update-top! assoc :saving? false :error "The server refused the change; see the status bar."))
 
+(def thumbnail-size
+  "A template's thumbnail, in pixels: small, it is stored with the template."
+  [240 160])
+
+(defn- thumbnail
+  "The open editor's preview as a thumbnail (a PNG data URL), or nil."
+  []
+  (some-> (get-in @ui* [:preview :view]) (mini-view/snapshot (thumbnail-size 0) (thumbnail-size 1))))
+
+(defn- with-thumbnail [t]
+  (if-let [png (thumbnail)] (assoc t :template/thumbnail png) t))
+
+(defn- copy-into-page!
+  "After an end's connection was edited over the assembly page, put the
+  copy into the page's draft (the dialog now on top)."
+  [end copy]
+  (when (= :instance (:kind (top)))
+    (update-draft! assoc end copy)))
+
+(defn- save-connection-instance!
+  "Save one assembly's own connection: :connection/update when it is
+  stored, else (an end picked on the assembly page and not saved yet) only
+  into the page's draft, which saves it with the assembly."
+  [{:keys [draft from connection-id end state from-page?]}]
+  (let [copy (cond-> (template/template->copy draft from)
+               connection-id (assoc :connection/id connection-id))
+        done! (fn [] (close!) (when from-page? (copy-into-page! end copy)))]
+    (if-not connection-id
+      (done!)
+      (-> ((:send! @env*) {:edit/type :connection/update :connection/id connection-id
+                           :xline/id (:xline/id state)
+                           :connection (dissoc copy :connection/id)})
+          (.then #(if % (done!) (refused!)))))))
+
 (defn- save! []
   (let [{:keys [kind draft] :as dlg} (top)
         problems (when-not (= :instance kind) (te/draft-errors draft))]
     (if (seq problems)
       (update-top! assoc :error (str/join " " problems))
       (do (update-top! assoc :error nil :saving? true)
-          (-> (if (= :instance kind)
-                (send-all! (te/save-edits draft dlg))
-                ((:send! @env*) {:edit/type :template/save :template draft}))
-              (.then #(if % (close!) (refused!))))))))
+          (case kind
+            :instance (-> (send-all! (te/save-edits draft dlg)) (.then #(if % (close!) (refused!))))
+            :conn-instance (save-connection-instance! dlg)
+            (-> ((:send! @env*) {:edit/type :template/save :template (with-thumbnail draft)})
+                (.then #(if % (close!) (refused!)))))))))
+
+(defn- save-to-library!
+  "Put the instance connection editor's draft in the library as a new
+  connection template, with a thumbnail of the real connection. The copy
+  then notes it came from there (recorded when the connection is saved)."
+  []
+  (let [{:keys [draft]} (top)
+        problems (te/draft-errors draft)
+        before (set (keys (:templates @env*)))]
+    (if (seq problems)
+      (update-top! assoc :error (str/join " " problems))
+      (do (update-top! assoc :error nil :saving? true)
+          (-> ((:send! @env*) {:edit/type :template/save
+                               :template (with-thumbnail (-> draft (dissoc :template/id) (assoc :template/kind :connection)))})
+              (.then (fn [ok?]
+                       (if-not ok?
+                         (refused!)
+                         (let [id (first (remove before (keys (:templates @env*))))]
+                           (update-top! assoc :saving? false
+                                        :from (template/provenance (get-in @env* [:templates id]))
+                                        :note "Saved to the library. Save to keep the note of where this connection came from."))))))))))
 
 (defn- apply-template! []
   (let [{:keys [draft apply info]} (top)
@@ -266,23 +332,56 @@
                                 {:class "pname" :placeholder "new parameter"}))
           (h :td {:colspan 3 :class "muted small"} "Type a name and press Enter to add a row.")))))
 
-(defn- connection-editor [{:keys [draft size support-size arrangement error saving?]}]
-  (let [{:keys [instructions errors]} (te/connection-preview @lib (:templates @env*) draft
-                                                             {:size size :support-size support-size
-                                                              :arrangement arrangement})
-        resolved (te/resolve-for @lib draft {} size support-size)
+(defn- size-of
+  "The designation of an XLine's main part in a page context, or nil."
+  [context id]
+  (let [p (get-in context [:xlines id :assembly/parts 0 :part/profile])]
+    (when (string? p) p)))
+
+(defn- connection-editor
+  "The connection editor. Library mode (:connection) edits a library
+  template against a sample owner and support; instance mode
+  (:conn-instance) edits one assembly's own copy against the real member
+  and what that end sits on."
+  [{:keys [kind draft arrangement error note saving? from end state context supports] :as dlg}]
+  (let [instance? (= :conn-instance kind)
+        support-id (get-in state [:supports end])
+        size (if instance? (:assembly/size state) (:size dlg))
+        support-size (if instance? (or (get-in supports [end :size]) (size-of context support-id)) (:support-size dlg))
+        {:keys [instructions errors nodes]}
+        (if instance?
+          (te/connection-instance-preview @lib (:templates @env*) context state end draft)
+          (te/connection-preview @lib (:templates @env*) draft
+                                 {:size size :support-size support-size :arrangement arrangement}))
+        resolved (te/resolve-for @lib draft {} (when (string? size) size) support-size)
         n (count (:template/actions draft))
-        host (preview-host! [1 -1.4 0.9])
+        iso (if instance? (second (first (te/preview-views nodes))) [1 -1.4 0.9])
+        host (preview-host! iso)
         other-errors (remove :param errors)]
     (show-preview! instructions)
     (h :div {:class "dialog connection-editor"}
        (h :header {}
-          (h :h2 {} (if (:template/id draft) "Connection template" "New connection template"))
+          (h :h2 {} (cond
+                      instance? (str (:assembly/mark state) ", " (if (= :start end) "start" "end") " connection")
+                      (:template/id draft) "Connection template"
+                      :else "New connection template"))
           (text-field "name" (:template/name draft) #(update-draft! assoc :template/name %) {:class "name"})
           (h :span {:class "grow"})
+          (when instance?
+            (h :button {:disabled saving? :on-click save-to-library!
+                        :title "Put a copy of this connection in the template library"}
+               "Save as new library template"))
           (h :button {:on-click close!} "Cancel")
           (h :button {:class "on" :disabled saving? :on-click save!} "Save"))
        (when error (h :div {:class "dialog-error"} error))
+       (when instance?
+         (h :div {:class "instance-info"}
+            (h :span {} (if from
+                          (list (h :span {:class "muted"} "from library: ") (h :strong {} (or (:template/name from) "(unnamed)")))
+                          (h :span {:class "muted"} "not from a library template")))
+            (h :span {:class "muted small"}
+               "This assembly's own copy: saving changes this end only, never the library.")
+            (when note (h :span {:class "small"} note))))
        (h :div {:class "dialog-body two-col"}
           (h :div {:class "col"}
              (h :p {:class "muted small"}
@@ -306,20 +405,32 @@
                 (h :code {} "(:tf support)") ") and the other numeric parameters."))
           (h :div {:class "col"}
              (h :h3 {} "Preview")
-             (h :table {:class "placement"}
-                (h :tr {} (h :th {} "Owner") (h :td {} (size-select "size" size #(update-top! assoc :size %))))
-                (h :tr {} (h :th {} "Support")
-                   (h :td {} (size-select "support-size" support-size #(update-top! assoc :support-size %))))
-                (h :tr {} (h :th {} "Support as")
-                   (h :td {} (select-of "arrangement" (name arrangement)
-                                        (map (fn [[k l]] [(name k) l]) te/arrangements)
-                                        #(do (update-top! assoc :arrangement (keyword %))
-                                             (show-preview! (:instructions (te/connection-preview
-                                                                            @lib (:templates @env*) draft
-                                                                            {:size size :support-size support-size
-                                                                             :arrangement (keyword %)}))
-                                                            :fit? true))))))
-             (view-buttons [["Iso" [1 -1.4 0.9]] ["Plan" [0 0 1]] ["Side" [0 -1 0]] ["End" [-1 0 0]]])
+             (if instance?
+               (h :p {:class "muted small"}
+                  (str (:assembly/mark state) (when (string? size) (str ", " size)) " into "
+                       (get-in supports [end :assembly/mark] "its support")
+                       (when support-size (str ", " support-size))
+                       ", where they are in the model, as Save would make them."))
+               (h :table {:class "placement"}
+                  (h :tr {} (h :th {} "Owner") (h :td {} (size-select "size" size #(update-top! assoc :size %))))
+                  (h :tr {} (h :th {} "Support")
+                     (h :td {} (size-select "support-size" support-size #(update-top! assoc :support-size %))))
+                  (h :tr {} (h :th {} "Support as")
+                     (h :td {} (select-of "arrangement" (name arrangement)
+                                          (map (fn [[k l]] [(name k) l]) te/arrangements)
+                                          #(do (update-top! assoc :arrangement (keyword %))
+                                               (show-preview! (:instructions (te/connection-preview
+                                                                              @lib (:templates @env*) draft
+                                                                              {:size size :support-size support-size
+                                                                               :arrangement (keyword %)}))
+                                                              :fit? true)))))))
+             (when-not instance?
+               (h :p {:class "muted small"}
+                  "A sample owner and support: saving changes the library template only. "
+                  "Assemblies already made from it keep their own copies."))
+             (view-buttons (if instance?
+                             (te/preview-views nodes)
+                             [["Iso" [1 -1.4 0.9]] ["Plan" [0 0 1]] ["Side" [0 -1 0]] ["End" [-1 0 0]]]))
              host
              (messages (map regen-error-text other-errors)))))))
 
@@ -385,61 +496,79 @@
            (h :tr {} (h :th {} "End extension") (h :td {} (num-field "ex" (:part/end-ext main) #(set-main! :part/end-ext (or % 0))))))
         (h :p {:class "muted small"} "An extension lengthens the member past its node; a negative one sets it back.")))))
 
+(defn- thumb
+  "A library template's thumbnail, or nothing."
+  [src & [title]]
+  (when src (h :img {:class "thumb" :src src :alt "" :title (or title "")})))
+
+(defn- connection-options
+  "The library's connection templates for a picker, after `first-option`."
+  [first-option]
+  (cons first-option (map (fn [t] [(str (:template/id t)) (:template/name t)]) (templates-of :connection))))
+
+(defn- library-connection [v]
+  (some #(when (= v (str (:template/id %))) %) (templates-of :connection)))
+
 (defn- end-card
-  "One end: the connection template (or none), its parameters for this
-  member's size and the per-end overrides. A template's card resolves
-  without a support; an assembly's against the member its end sits on."
-  [end {:keys [kind draft supports]} size]
+  "One end, on the edge of the Assembly view it belongs to: the
+  connection's name (with its library template's thumbnail) and Edit
+  connection…. An assembly template's end picks a library connection
+  template, and Edit opens it in the library; an assembly's end is its own
+  copy, which Edit opens in instance mode against the real member and what
+  it sits on, and Replace swaps for a fresh copy of a library template."
+  [end {:keys [kind draft supports context] :as dlg}]
   (let [k (end (paths kind))
         instance? (= :instance kind)
         support (get supports end)
-        support-size (:size support)
         condition (get draft k)
-        summary (te/end-summary @lib (:templates @env*) condition size support-size)
+        info (te/end-info (:templates @env*) condition)
         set-condition! (fn [c] (update-draft! #(if c (assoc % k c) (dissoc % k))))
-        error-of (into {} (map (juxt :param identity)) (:errors summary))
-        options (cons ["" "None (plain end)"]
-                      (map (fn [t] [(str (:template/id t)) (:template/name t)]) (templates-of :connection)))]
+        edit! (fn [e]
+                (.preventDefault e)
+                (if instance?
+                  (open-connection-instance! {:state draft :context context :supports supports} end :from-page? true)
+                  (when-let [t (get-in @env* [:templates (:connection/template condition)])] (open! t))))]
     (h :div {:class (str "end-card " (name end))}
        (h :h3 {} (if (= :start end) "Start" "End"))
        (when instance?
          (h :p {:class "muted small"}
             (if support
-              (str "Sits on " (:assembly/mark support) (when support-size (str ", " support-size)) ".")
-              "Not on another XLine: no connection is made here.")))
-       (h :div {:class "row"}
-          "Connection "
-          (select-of (str (name end) "-tpl") (str (:connection/template condition ""))
-                     options
-                     (fn [v] (set-condition! (when-let [t (some #(when (= v (str (:template/id %))) %)
-                                                              (templates-of :connection))]
-                                               {:connection/template (:template/id t)})))))
-       (if-not summary
-         (h :p {:class "muted"} (if condition "Unknown connection template." "No connection: the member end is left as it is."))
-         (list
-          (h :div {:class "row"}
-             (h :span {:class "muted small"}
-                (str/join " → " (map #(name (:action/type %)) (:template/actions (:template summary)))))
-             (h :span {:class "grow"})
-             (h :a {:href "#" :on-click (fn [e] (.preventDefault e) (open! (:template summary)))}
-                "Open in the connection editor"))
-          (h :table {:class "params"}
-             (h :tr {} (h :th {} "Parameter") (h :th {} (str "At " (if (map? size) "this size" size))) (h :th {} "Override"))
-             (for [{:keys [param value template-value override overridden? needs-support?]} (:rows summary)]
-               (h :tr {:class (str (when overridden? "overridden") (when (error-of param) " bad"))}
-                  (h :td {} (name param))
-                  (h :td {:class "resolved"}
-                     (cond
-                       (error-of param) (h :span {:class "warn"} (error-text (error-of param)))
-                       needs-support? (h :span {:class "muted" :title "A formula over the support: it is worked out where the member meets one"}
-                                         "from the support")
-                       :else (fmt value)))
-                  (h :td {} (text-field (str (name end) "-ov-" (name param)) (when overridden? (te/param-text override))
-                                        (fn [t]
-                                          (let [v (te/parse-param t)]
-                                            (update-draft! update-in [k :connection/params]
-                                                           #(if (nil? v) (dissoc % param) (assoc (or % {}) param v)))))
-                                        {:placeholder (te/param-text template-value)}))))))))))
+              (str "On " (:assembly/mark support) (when-let [s (:size support)] (str ", " s)))
+              "Not on another XLine: no connection here.")))
+       (cond
+         (nil? info) (h :p {:class "muted"} "Plain end")
+         (not (:known? info)) (h :p {:class "warn small"} "Unknown connection template.")
+         :else (list (thumb (:thumbnail info) (get-in info [:from :template/name]))
+                     (h :div {:class "conn-name"} (h :strong {} (:name info)))
+                     (when (and instance? (:from info))
+                       (h :div {:class "muted small"} "from library: " (or (get-in info [:from :template/name]) "(unnamed)")))
+                     (h :div {:class "muted small"} (str/join " → " (map name (:actions info))))
+                     (when (or (not instance?) support)
+                       (h :a {:href "#" :class "edit-link" :on-click edit!} "Edit connection…"))))
+       (when (or (not instance?) support)
+         (h :div {:class "row"}
+            (select-of (str (name end) "-tpl")
+                       (if instance? "" (str (:connection/template condition "")))
+                       (if instance?
+                         (concat [["" (if condition "Replace with…" "Add a connection…")]]
+                                 (when condition [["none" "None (plain end)"]])
+                                 (rest (connection-options nil)))
+                         (connection-options ["" "None (plain end)"]))
+                       (fn [v]
+                         (let [t (library-connection v)]
+                           (cond
+                             ;; an assembly's end gets its own copy, on the connection it had
+                             instance? (cond
+                                         (= "none" v) (set-condition! nil)
+                                         t (set-condition! (cond-> (template/connection-copy
+                                                                    (:templates @env*) {:connection/template (:template/id t)})
+                                                             (:connection/id condition)
+                                                             (assoc :connection/id (:connection/id condition)))))
+                             :else (set-condition! (when t {:connection/template (:template/id t)}))))))))
+       (when (and (not instance?) (seq (get-in condition [:connection/params])))
+         (h :p {:class "muted small"}
+            "This end overrides " (str/join ", " (map name (keys (:connection/params condition))))
+            " (an older template); applying it copies them into the connection.")))))
 
 (defn- regen-messages [errors]
   (messages (map regen-error-text (remove :param errors))))
@@ -465,6 +594,21 @@
        host
        (h :p {:class "muted small"} note " Left drag orbits, right drag pans, the wheel zooms."))))
 
+(defn- assembly-panes
+  "The page split in two: the insertion panel on the left; on the right the
+  Assembly view, the Start card on its left edge and the End card on its
+  right."
+  [dlg size size-control preview note errors & view-opts]
+  (h :div {:class "dialog-body assembly"}
+     (h :div {:class "pane insertion"}
+        (main-member-section dlg size size-control))
+     (h :div {:class "pane model"}
+        (h :div {:class "ends-and-view"}
+           (end-card :start dlg)
+           (apply assembly-view preview note view-opts)
+           (end-card :end dlg))
+        (h :div {:class "messages"} (regen-messages errors)))))
+
 (defn- assembly-builder [{:keys [draft size error saving?] :as dlg}]
   (let [length (te/preview-length @lib (:templates @env*) draft size (:support-size dlg))
         {:keys [errors] :as preview} (te/assembly-preview @lib (:templates @env*) draft
@@ -482,46 +626,46 @@
           (h :button {:on-click close!} "Cancel")
           (h :button {:class "on" :disabled saving? :on-click save!} "Save"))
        (when error (h :div {:class "dialog-error"} error))
-       (h :div {:class "dialog-body assembly"}
-          (main-member-section dlg size
-                               (h :div {:class "row"} "Preview size "
-                                  (size-select "size" size #(update-top! assoc :size %)
-                                               (sizes-for (:template/role draft)))))
-          (assembly-view preview
-                         (str "The member alone, on a " (fmt length) " mm sample XLine (the thin line, a ball at each node), "
-                              "just long enough to keep its two end details apart. "
-                              "An end with a connection is made against a " (:support-size dlg)
-                              " column, as in the connection editor, which isn't drawn.")
-                         :length length)
-          (end-card :start dlg size)
-          (end-card :end dlg size)
-          (h :div {:class "messages"} (regen-messages errors))))))
+       (assembly-panes dlg size
+                       (h :div {:class "row"} "Preview size "
+                          (size-select "size" size #(update-top! assoc :size %)
+                                       (sizes-for (:template/role draft))))
+                       preview
+                       (str "A sample member, on a " (fmt length) " mm XLine (the thin line, a ball at each node), "
+                            "just long enough to keep its two end details apart. "
+                            "An end with a connection is made against a " (:support-size dlg)
+                            " column, which isn't drawn. Saving changes the library only: "
+                            "assemblies made from this template keep their own copies.")
+                       errors
+                       :length length))))
 
-(defn- template-note [{:assembly/keys [template from-template]}]
-  (cond
-    template (list "From template " (h :strong {} (or (template-name template) "(unknown)"))
-                   ": editing the template updates this assembly.")
-    from-template (list "Edited by hand, from template " (h :strong {} (or (template-name from-template) "(unknown)"))
-                        ": template edits no longer change it.")
-    :else "Not from a template."))
+(defn- template-note [{from :assembly/from-template}]
+  (if from
+    (list "From library template " (h :strong {} (or (:template/name from) (template-name (:template/id from)) "(unnamed)"))
+          ": a copy, so library edits don't change it.")
+    "Not from a template."))
 
 (defn- apply-row [{:keys [draft apply saving?]}]
-  (let [candidates (sort-by #(if (= (:xline/role draft) (:template/role %)) 0 1) (templates-of :assembly))
+  (let [from (get-in draft [:assembly/from-template :template/id])
+        candidates (sort-by #(cond (= from (:template/id %)) 0 (= (:xline/role draft) (:template/role %)) 1 :else 2)
+                            (templates-of :assembly))
         tid (or (:template-id apply) (:template/id (first candidates)))
         sizes (sizes-for (:xline/role draft))
         size (or (:size apply) (when (string? (:assembly/size draft)) (:assembly/size draft)) (first sizes))]
     (h :div {:class "apply-row"}
-       (h :strong {} "Apply a template instead ")
+       (h :strong {} "Re-apply from library ")
        (select-of "apply-tpl" (str tid) (map (fn [t] [(str (:template/id t)) (:template/name t)]) candidates)
                   (fn [v] (update-top! assoc-in [:apply :template-id]
                                        (some #(when (= v (str (:template/id %))) (:template/id %)) candidates))))
+       (thumb (get-in @env* [:templates tid :template/thumbnail]))
        " at "
        (size-select "apply-size" size #(update-top! assoc-in [:apply :size] %) sizes)
        (h :button {:class "on" :disabled (or saving? (nil? tid))
                    :on-click (fn [] (update-top! update :apply assoc :template-id tid :size size) (apply-template!))}
           "Apply")
        (h :button {:on-click #(update-top! dissoc :apply)} "Close")
-       (h :span {:class "muted small"} "Replaces the placement and both ends with the template's; unsaved changes here are lost."))))
+       (h :span {:class "muted small"}
+          "Copies the template as the library has it now: placement and both ends' connections. Unsaved changes here are lost."))))
 
 (defn- assembly-instance [{:keys [draft info rotation error saving? apply context] :as dlg}]
   (let [size (:assembly/size draft)
@@ -536,7 +680,7 @@
           (h :span {:class "grow"})
           (h :button {:class (when apply "on") :disabled saving?
                       :on-click #(update-top! (fn [d] (if (:apply d) (dissoc d :apply) (assoc d :apply {}))))}
-             "Apply template…")
+             "Re-apply from library…")
           (h :button {:on-click close!} "Cancel")
           (h :button {:class "on" :disabled saving? :on-click save!} "Save"))
        (when error (h :div {:class "dialog-error"} error))
@@ -548,20 +692,17 @@
           (h :span {} (h :span {:class "muted"} "Length ") (str (fmt (:length info)) " mm"))
           (h :label {} (h :span {:class "muted"} "XLine rotation ")
              (num-field "xrot" rotation #(update-top! assoc :rotation (or % 0)))))
-       (h :div {:class "dialog-body assembly"}
-          (main-member-section dlg size
-                               (h :div {:class "row"} "Size "
-                                  (if (map? size)
-                                    (h :span {:class "muted"} "custom section")
-                                    (size-select "size" size #(update-draft! assoc :assembly/size %)
-                                                 (sizes-for role)))))
-          (assembly-view (or preview {:instructions {} :nodes []})
-                         (str "This assembly alone, as Save would make it, on its " (fmt (:length info))
-                              " mm XLine (the thin line, a ball at each node), laid along the view whichever way it runs. "
-                              "What its ends sit on isn't drawn."))
-          (end-card :start dlg size)
-          (end-card :end dlg size)
-          (h :div {:class "messages"} (regen-messages (:errors preview)))))))
+       (assembly-panes dlg size
+                       (h :div {:class "row"} "Size "
+                          (if (map? size)
+                            (h :span {:class "muted"} "custom section")
+                            (size-select "size" size #(update-draft! assoc :assembly/size %)
+                                         (sizes-for role))))
+                       (or preview {:instructions {} :nodes []})
+                       (str "This assembly alone, as Save would make it, on its " (fmt (:length info))
+                            " mm XLine (the thin line, a ball at each node), laid along the view whichever way it runs. "
+                            "What its ends sit on isn't drawn.")
+                       (:errors preview)))))
 
 ;; --- dialog and library panel -----------------------------------------------------------
 
@@ -579,16 +720,18 @@
       (do (set! (.. root -style -display) "flex")
           (dom/replace-keeping-focus!
            root [(case (:kind dlg)
-                   :connection (connection-editor dlg)
+                   (:connection :conn-instance) (connection-editor dlg)
                    :assembly (assembly-builder dlg)
                    :instance (assembly-instance dlg))])))))
 
 (defn library-section
-  "The side panel's template library: both kinds, with new, copy and edit."
+  "The side panel's template library: both kinds, each with its thumbnail,
+  with new, copy and edit."
   []
   (let [rows (fn [kind]
                (for [t (templates-of kind)]
                  (h :tr {}
+                    (h :td {:class "thumb-cell"} (thumb (:template/thumbnail t)))
                     (h :td {} (:template/name t))
                     (h :td {:class "tight"}
                        (h :button {:class "small" :on-click #(open! t)} "Edit")
@@ -596,10 +739,12 @@
     (h :section {}
        (h :h2 {} "Templates")
        (h :table {:class "library"}
-          (h :tr {} (h :th {:colspan 2} "Assembly"))
+          (h :tr {} (h :th {:colspan 3} "Assembly"))
           (rows :assembly)
-          (h :tr {} (h :th {:colspan 2} "Connection"))
+          (h :tr {} (h :th {:colspan 3} "Connection"))
           (rows :connection))
+       (h :p {:class "muted small"}
+          "Templates are starting points: applying one copies it, so editing a template here changes no assembly.")
        (h :div {:class "buttons"}
           (h :button {:on-click #(open! (te/blank :assembly))} "New assembly")
           (h :button {:on-click #(open! (te/blank :connection))} "New connection")))))
