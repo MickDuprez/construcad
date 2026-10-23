@@ -25,8 +25,18 @@
   "Every building with its project name, for the building picker."
   [db]
   (sort-by :building/name
-           (q db '{:find (pull b [* {:building/project [:project/name]}])
+           (q db '{:find (pull b [* {:building/project [:xt/id :project/name]}])
                    :where [[b :building/project]]})))
+
+(defn projects
+  "Every project with its buildings, for the project and building pickers.
+  There are no accounts yet, so every project is listed."
+  [db]
+  (let [buildings (group-by #(get-in % [:building/project :xt/id]) (buildings db))]
+    (->> (q db '{:find (pull p [:xt/id :project/name]) :where [[p :project/name]]})
+         (sort-by :project/name)
+         (mapv (fn [p] (assoc p :buildings (mapv #(select-keys % [:xt/id :building/name])
+                                                 (buildings (:xt/id p)))))))))
 
 (defn first-building-id [db]
   (:xt/id (first (buildings db))))

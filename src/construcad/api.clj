@@ -1,6 +1,7 @@
 (ns construcad.api
   "EDN over HTTP, plus a websocket per open viewer for pushed patches.
 
+    GET  /api/projects                          projects, each with its buildings
     GET  /api/buildings                         building list
     GET  /api/buildings/:id/view?level=<uuid>   grid, levels, instructions
     GET  /api/buildings/:id/templates           template library + section designations
@@ -28,6 +29,9 @@
 
 (defn- read-body [{:keys [body-params body]}]
   (or body-params (some-> body slurp edn/read-string)))
+
+(defn projects [{:keys [biff/db]}]
+  (edn-response (store/projects db)))
 
 (defn buildings [{:keys [biff/db]}]
   (edn-response (vec (store/buildings db))))
@@ -73,6 +77,7 @@
 
 (def module
   {:api-routes [["/api"
+                 ["/projects" {:get projects}]
                  ["/buildings" {:get buildings}]
                  ["/buildings/:id/view" {:get view}]
                  ["/buildings/:id/templates" {:get templates}]
