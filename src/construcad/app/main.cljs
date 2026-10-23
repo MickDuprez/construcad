@@ -264,11 +264,8 @@
   (update-overlays!))
 
 (defn- create-xline! [start end]
-  ;; The role picked for the tool. A beam drawn at one grid intersection
-  ;; (both ends on the same grid point, so vertical) is a column.
-  (let [picked (:xline-role @state*)
-        role (if (and (= :beam picked) (:node/grid start) (= (:node/grid start) (:node/grid end))) :column picked)]
-    (send-edit! {:edit/type :xline/create :start start :end end :role role})))
+  ;; Always the role picked for the tool, whichever way the XLine runs.
+  (send-edit! {:edit/type :xline/create :start start :end end :role (:xline-role @state*)}))
 
 (defn- grip-under [cursor]
   (let [{:keys [selected]} @state*]
