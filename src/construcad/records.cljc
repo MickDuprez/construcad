@@ -59,12 +59,16 @@
      :sections (:sections library)}))
 
 (defn write-docs
-  "Biff transaction documents for a plan's writes against the edited model."
-  [building m' writes]
+  "Biff transaction documents for a plan's writes against the edited model.
+  `project` is needed only when the plan writes a template."
+  [building m' writes & {:keys [project]}]
   (for [[kind id] writes]
     (case kind
       :assembly (assoc (assembly-doc building (get-in m' [:xlines id])) :db/op :update)
       :assembly/create (assoc (assembly-doc building (get-in m' [:xlines id])) :db/op :create)
       :grid (assoc (grid-doc building (:grid m')) :db/op :update)
       :level (assoc (level-doc building (some #(when (= id (:xt/id %)) %) (:levels m'))) :db/op :update)
-      :connection/delete {:db/op :delete :xt/id id})))
+      ;; no :db/op: the whole document is replaced, so removed keys go too
+      :connection (connection-doc building (get-in m' [:connections id]))
+      :connection/delete {:db/op :delete :xt/id id}
+      :template (template-doc project (get-in m' [:templates id])))))

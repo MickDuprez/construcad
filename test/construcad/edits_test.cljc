@@ -27,6 +27,12 @@
   (let [{m :model} (seeded)
         view (edits/view m (keys (:xlines m)))]
     (is (= 7 (count (:instructions view))))
+    (testing "B2 comes from the end plate template, with plates and bolts"
+      (is (= "Beam, end plates both ends"
+             (get-in m [:templates (get-in m [:xlines (by-mark m "B2") :assembly/template]) :template/name])))
+      (is (= [:b-2-xline :main :bolts-end :bolts-start :plate-end :plate-start]
+             (map #(if (= :xline (:op %)) :b-2-xline (:id %))
+                  (get-in view [:instructions (by-mark m "B2") :child :children])))))
     (is (empty? (:errors view)))
     (is (= #{"GL" "L1"} (set (map :level/name (:levels view)))))))
 
@@ -50,7 +56,7 @@
         p (edits/plan m {:edit/type :xline/set-node :xline/id b1 :xline/end :end
                          :node {:node/at [0 4000 4200]}})]
     (is (= 1 (count (filter #(= :connection/delete (first %)) (:writes p)))))
-    (is (= 1 (count (:connections (:model p)))))
+    (is (= 3 (count (:connections (:model p)))) "B1 keeps one, B2's two are untouched")
     (is (empty? (:errors (edits/patch m p))))))
 
 (deftest refused-edits
@@ -125,3 +131,68 @@
     (is (= :assembly (:db/doc-type doc)))
     (is (= 90 (:xline/rotation doc)))
     (is (= building (:assembly/building doc)))))
+
+(defn- template-named [m name]
+  (some (fn [[id t]] (when (= name (:template/name t)) id)) (:templates m)))
+
+(deftest applying-templates
+  (let [{m :model building :building} (seeded)
+        b1 (by-mark m "B1")
+        tid (template-named m "Beam, end plates both ends")
+        p (edits/plan m {:edit/type :assembly/apply-template :xline/ids [b1] :template/id tid
+                         :size "250UB31.4"})]
+    (is (nil? (:error p)))
+    (is (= #{b1} (:changed p)))
+    (testing "the existing connections are reused, so nothing is deleted"
+      (is (= 2 (count (filter #(= :connection (first %)) (:writes p)))))
+      (is (empty? (filter #(= :connection/delete (first %)) (:writes p)))))
+    (testing "the patch carries the plates and bolts"
+      (let [patch (edits/patch m p)
+            kids (get-in patch [:upsert b1 :child :children])]
+        (is (= #{:xline :slice :subtract :group}
+               (set (map :op kids))))))
+    (testing "write docs for connections replace whole documents"
+      (let [docs (records/write-docs building (:model p) (:writes p))]
+        (is (every? #(not= :update (:db/op %)) (filter #(= :connection (:db/doc-type %)) docs)))))
+    (testing "refused: unknown template or size"
+      (is (= :edit/unknown-template
+             (get-in (edits/plan m {:edit/type :assembly/apply-template :xline/ids [b1] :template/id (random-uuid)})
+                     [:error :error/type])))
+      (is (= :template/unknown-size
+             (get-in (edits/plan m {:edit/type :assembly/apply-template :xline/ids [b1] :template/id tid
+                                    :size "999UB1"})
+                     [:error :error/type]))))))
+
+(deftest saving-templates
+  (let [{m :model building :building} (seeded)
+        b2 (by-mark m "B2")
+        ep (template-named m "End plate, 4 bolts")]
+    (testing "editing a connection template regenerates the members using it"
+      (let [t (assoc-in (get-in m [:templates ep]) [:template/params :plate-t] 16)
+            p (edits/plan m {:edit/type :template/save :template t})
+            plate (some #(when (= :plate-end (:id %)) %)
+                        (get-in (edits/patch m p) [:upsert b2 :child :children]))]
+        (is (= #{b2} (:changed p)))
+        (is (= 16 (get-in plate [:part/size :t])))
+        (let [project (random-uuid)
+              [doc] (records/write-docs building (:model p) (:writes p) :project project)]
+          (is (= project (:template/project doc))))))
+    (testing "a new assembly template gets an id from the server"
+      (let [id (random-uuid)
+            p (edits/plan m {:edit/type :template/save :new-id (constantly id)
+                             :template {:template/kind :assembly :template/name "Beam, cut one end"
+                                        :template/main {:part/insert :top-centre}
+                                        :template/start {:connection/template ep}}})]
+        (is (= [[:template id]] (:writes p)))))
+    (testing "refused: unknown action or missing connection template"
+      (is (= :unknown-action
+             (get-in (edits/plan m {:edit/type :template/save
+                                    :template {:template/kind :connection :template/name "x"
+                                               :template/actions [{:action/type :weld-everything}]}})
+                     [:error :reason])))
+      (is (= :unknown-connection-template
+             (get-in (edits/plan m {:edit/type :template/save
+                                    :template {:template/kind :assembly :template/name "x"
+                                               :template/start {:connection/template (random-uuid)}}})
+                     [:error :reason]))))))
+

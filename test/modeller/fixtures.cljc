@@ -51,7 +51,21 @@
                    :assembly/parts [{:part/id :panel :part/kind :extrusion
                                      :part/profile {:section/builder :rect :b 150 :d 4800}
                                      :part/insert :bottom-centre}]}])
-   :templates {:square-cut {:template/id :square-cut
+   :templates {:conn/end-plate {:template/id :conn/end-plate
+                                :template/kind :connection
+                                :template/name "End plate, 4 bolts"
+                                :template/params {:gap 0 :plate-t 12 :plate-w "bf" :plate-h "(+ d 20)"
+                                                  :rows 2 :cols 2 :gauge 90 :pitch "(- d (* 2 tf) 80)"
+                                                  :bolt-dia 20}
+                                :template/actions [{:action/type :end-plate} {:action/type :bolt-group}]}
+               :tpl/beam-end-plates {:template/id :tpl/beam-end-plates
+                                     :template/kind :assembly
+                                     :template/name "Beam, end plates both ends"
+                                     :template/role :beam
+                                     :template/main {:part/insert :top-centre}
+                                     :template/start {:connection/template :conn/end-plate}
+                                     :template/end {:connection/template :conn/end-plate}}
+               :square-cut {:template/id :square-cut
                             :template/params {:gap 10}
                             :template/actions [{:action/type :cut-to-face :action/face :auto}]}}
    :connections {:b-1-start {:connection/id :b-1-start :connection/owner :b-1 :connection/end :start

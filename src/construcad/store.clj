@@ -59,13 +59,14 @@
   upsert patch, or {:error e}. New XLines get their id here, never from the
   browser."
   [ctx building-id edit]
-  (if-let [{m :model} (building-model ctx building-id)]
-    (let [edit (cond-> edit
+  (if-let [{m :model building :building} (building-model ctx building-id)]
+    (let [edit (cond-> (assoc edit :new-id random-uuid)
                  (= :xline/create (:edit/type edit)) (assoc :xline/id (random-uuid)))
           planned (edits/plan m edit)]
       (if (:error planned)
         planned
-        (do (biff/submit-tx ctx (vec (records/write-docs building-id (:model planned) (:writes planned))))
+        (do (biff/submit-tx ctx (vec (records/write-docs building-id (:model planned) (:writes planned)
+                                                         :project (:building/project building))))
             (edits/patch m planned))))
     {:error {:error/type :edit/unknown-building :building/id building-id}}))
 

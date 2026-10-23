@@ -43,6 +43,8 @@
    :template [:map {:closed false}
               [:xt/id :uuid]
               [:template/project :uuid]
-              [:template/actions [:vector [:map {:closed false} [:action/type :keyword]]]]]})
+              [:template/kind [:enum :connection :assembly]]
+              [:template/name :string]
+              [:template/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]]})
 
 (def module {:schema schema})

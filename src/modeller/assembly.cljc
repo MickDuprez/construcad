@@ -28,6 +28,7 @@
   (:require [modeller.frame :as frame]
             [modeller.instr :as instr]
             [modeller.model :as model]
+            [modeller.params :as params]
             [modeller.profile :as profile]
             [modeller.profile-builder :as builder]
             [modeller.vec :as v]))
@@ -87,38 +88,129 @@
         (update-vals (profile/face-planes outline)
                      #(frame/plane->local owner-frame (frame/plane->parent to-world %)))))))
 
+(defn- approach-plane
+  "The supporting face the owner approaches (or the named one), pushed out
+  along its normal by `offset`, and the side of it the owner keeps."
+  [{:keys [conn owner-length] :as ctx} face offset]
+  (when-let [faces (support-faces-in-owner ctx)]
+    (let [approach (if (= :start (:connection/end conn)) [0 0 -1] [0 0 1])
+          {:keys [origin normal]} (if (= :auto (or face :auto))
+                                    (apply min-key #(v/dot (:normal %) approach) (vals faces))
+                                    (get faces face))
+          plane {:origin (v/v+ origin (v/scale normal offset)) :normal normal}
+          mid [0 0 (/ owner-length 2.0)]]
+      {:plane plane
+       :keep (if (pos? (v/dot (v/v- mid (:origin plane)) normal)) :positive :negative)})))
+
+(defn- slice-part [parts part-id {:keys [plane keep]}]
+  (update parts part-id #(merge (select-keys % [:part/kind :part/size])
+                                (assoc (instr/slice (dissoc % :id :part/kind :part/size) plane keep)
+                                       :id part-id))))
+
 (defmethod apply-action :cut-to-face
   ;; Cut the owner's part square to the face of the supporting member that it
   ;; approaches, leaving a gap. {:action/type :cut-to-face :action/part :main
-  ;;  :action/ref 0 :action/face :auto :action/gap 10}
-  [{:keys [conn owner-length params] :as ctx} action parts]
+  ;;  :action/face :auto :action/gap 10}; the :gap parameter wins.
+  [{:keys [params] :as ctx} action parts]
   (let [part-id (:action/part action (::main parts))
-        faces (support-faces-in-owner ctx)
-        approach (if (= :start (:connection/end conn)) [0 0 -1] [0 0 1])
-        face (:action/face action :auto)
-        gap (get params (:action/gap-param action :gap) (:action/gap action 0))]
-    (if-not (and faces (get parts part-id))
+        gap (get params (:action/gap-param action :gap) (:action/gap action 0))
+        cut (approach-plane ctx (:action/face action) gap)]
+    (if-not (and cut (get parts part-id))
       (update parts ::errors conj {:error/type :action/missing-input :action action})
-      (let [{:keys [origin normal]} (if (= :auto face)
-                                      (apply min-key #(v/dot (:normal %) approach) (vals faces))
-                                      (get faces face))
-            plane {:origin (v/v+ origin (v/scale normal gap)) :normal normal}
-            mid [0 0 (/ owner-length 2.0)]
-            keep (if (pos? (v/dot (v/v- mid (:origin plane)) normal)) :positive :negative)]
-        (update parts part-id
-                #(assoc (instr/slice (dissoc % :id) plane keep) :id part-id))))))
+      (slice-part parts part-id cut))))
+
+(defn- end-key [conn prefix]
+  (keyword (str prefix "-" (name (:connection/end conn)))))
+
+(defmethod apply-action :end-plate
+  ;; A plate against the supporting face, the main part cut back behind it.
+  ;; Parameters: :gap (face to plate, default 0), :plate-t, :plate-w, :plate-h
+  ;; (defaults 10, the section's bf and d), :plate-dx :plate-dy (shift of the
+  ;; plate centre from the section centre, in the plate's plane).
+  [{:keys [params model owner owner-data conn] :as ctx} action parts]
+  (let [part-id (:action/part action (::main parts))
+        gap (get params :gap 0)
+        t (get params :plate-t 10)
+        w (get params :plate-w (:bf owner-data (:b owner-data 100)))
+        h (get params :plate-h (:d owner-data 100))
+        inner (approach-plane ctx (:action/face action) gap)
+        main (some #(when (= part-id (:part/id %)) %) (:assembly/parts owner))
+        outline (when main (:outline (part-outline model main)))]
+    (if-not (and inner outline (get parts part-id))
+      (update parts ::errors conj {:error/type :action/missing-input :action action})
+      (let [{p :origin n :normal} (:plane inner)
+            c (:o (part-frame main outline))
+            ;; where the section's centre line meets the plate's inner face
+            denom (nth n 2)
+            z (if (< (Math/abs (double denom)) 1e-9) 0 (/ (v/dot (v/v- p c) n) denom))
+            o (v/v+ c [0 0 z])
+            x (v/normalize (v/v- [1 0 0] (v/scale n (v/dot [1 0 0] n))))
+            f (frame/translate {:o o :x x :y (v/cross n x) :z n}
+                               [(get params :plate-dx 0) (get params :plate-dy 0) 0])
+            plate-id (end-key conn "plate")
+            plate (assoc (instr/transform f (instr/extrude (profile/centre {:outer (profile/rect-loop w h)}) t))
+                         :id plate-id :part/kind :plate :part/size {:t t :w w :h h})]
+        (-> parts
+            (slice-part part-id (approach-plane ctx (:action/face action) (+ gap t)))
+            (assoc plate-id plate)
+            (assoc-in [::plates (:connection/end conn)] {:id plate-id :frame f :t t}))))))
+
+(defmethod apply-action :bolt-group
+  ;; Holes through the end plate made by this connection, and the bolts in
+  ;; them. Parameters: :rows :cols (default 2 x 2), :gauge (across, default
+  ;; 90), :pitch (up, default 70), :bolt-dia (20), :hole-dia (bolt + 2),
+  ;; :bolt-length (default plate + support flange + 30).
+  [{:keys [params conn support-data]} action parts]
+  (let [{plate-id :id f :frame t :t} (get-in parts [::plates (:connection/end conn)])]
+    (if-not plate-id
+      (update parts ::errors conj {:error/type :action/no-plate :action action})
+      (let [rows (long (get params :rows 2)) cols (long (get params :cols 2))
+            gauge (get params :gauge 90) pitch (get params :pitch 70)
+            bolt (get params :bolt-dia 20) hole (get params :hole-dia (+ bolt 2))
+            len (get params :bolt-length (+ t (:tf support-data 10) 30))
+            centres (for [j (range rows) i (range cols)]
+                      [(* gauge (- i (/ (dec cols) 2.0))) (* pitch (- j (/ (dec rows) 2.0)))])
+            ;; holes run through the plate along its +Z; bolts start at the plate's
+            ;; outer face and run back through it into the support
+            hole-tools (for [[x y] centres]
+                         (instr/transform (frame/translate f [x y -1]) (instr/cylinder (/ hole 2.0) (+ t 2))))
+            bolts (for [[x y] centres]
+                    (instr/transform (-> (frame/translate f [x y t])
+                                         (assoc :x (v/neg (:x f)) :z (v/neg (:z f))))
+                                     (instr/cylinder (/ bolt 2.0) len)))
+            bolts-id (end-key conn "bolts")]
+        (-> parts
+            (update plate-id #(assoc (instr/subtract (dissoc % :id :part/kind :part/size) hole-tools)
+                                     :id plate-id :part/kind :plate :part/size (:part/size %)))
+            (assoc bolts-id (assoc (instr/group bolts) :id bolts-id :part/kind :bolts
+                                   :part/size {:dia bolt :length len :count (count centres)})))))))
+
+(defn- section-data
+  "Table data for a part's profile: the library row, or the inline map."
+  [model part]
+  (let [p (:part/profile part)]
+    (if (map? p) p (get-in model [:sections p :section/data]))))
 
 (defn- connection-context [model resolved owner-id owner conn]
-  (let [ref-id (first (:connection/refs conn))]
+  (let [ref-id (first (:connection/refs conn))
+        ref-xline (get-in model [:xlines ref-id])
+        owner-data (section-data model (main-part owner))
+        support-data (some->> (main-part ref-xline) (section-data model))
+        {:keys [params errors]} (params/resolve-params
+                                 (merge (get-in model [:templates (:connection/template conn) :template/params])
+                                        (:connection/params conn))
+                                 owner-data support-data)]
     {:model model
      :conn conn
      :owner owner
+     :owner-data owner-data
+     :support-data support-data
      :owner-frame (get-in resolved [owner-id :frame])
      :owner-length (get-in resolved [owner-id :length])
-     :ref-xline (get-in model [:xlines ref-id])
+     :ref-xline ref-xline
      :ref-resolved (get resolved ref-id)
-     :params (merge (get-in model [:templates (:connection/template conn) :template/params])
-                    (:connection/params conn))}))
+     :params params
+     :param-errors errors}))
 
 (defn assembly-instruction
   "Instructions for one XLine-rooted assembly. Returns {:instr i :errors [...]}."
@@ -134,11 +226,15 @@
                           (update parts ::errors conj e)
                           (let [ctx (connection-context model resolved id xline conn)
                                 tpl (get-in model [:templates (:connection/template conn)])]
-                            (reduce #(apply-action ctx %2 %1) parts (:template/actions tpl)))))
+                            (reduce #(apply-action ctx %2 %1)
+                                    (update parts ::errors into (:param-errors ctx))
+                                    (:template/actions tpl)))))
                       parts owned)
-        order (map :part/id (:assembly/parts xline))]
+        order (map :part/id (:assembly/parts xline))
+        ;; parts the connections added (plates, bolts), after the XLine's own
+        added (sort-by str (remove (set order) (filter #(and (keyword? %) (nil? (namespace %))) (keys parts))))]
     {:instr (assoc (instr/transform frame
                                     (instr/group (cons {:op :xline :id id :length length}
-                                                       (keep parts order))))
+                                                       (keep parts (concat order added)))))
                    :id id)
      :errors (concat (keep :error built) (::errors parts))}))

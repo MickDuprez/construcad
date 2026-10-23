@@ -10,14 +10,19 @@
     {:edit/type :grid/set-axis-offset :axis/id :x2 :offset 6500}
     {:edit/type :grid/relabel       :x-style :letters :y-style :numbers}
     {:edit/type :level/set-elevation :level/id id :elevation 4500}
+    {:edit/type :assembly/apply-template :xline/ids [id ...] :template/id tid :size \"310UB40.4\"}
+    {:edit/type :template/save      :template {...}}   ; connection or assembly template
 
   `plan` returns {:model m' :changed #{xline ids} :writes [record ...]} or
   {:error e}. A record is [:assembly id], [:assembly/create id], [:grid],
-  [:level id] or [:connection/delete id]."
+  [:level id], [:connection id], [:connection/delete id] or [:template id].
+  New ids (connections, templates) come from the edit's :new-id function,
+  which the store supplies; a browser never chooses an id."
   (:require [modeller.core :as core]
             [modeller.grid :as grid]
             [modeller.model :as model]
-            [modeller.node :as node]))
+            [modeller.node :as node]
+            [modeller.template :as template]))
 
 (defn- error [type & {:as data}] {:error (assoc data :error/type type)})
 
@@ -174,6 +179,74 @@
           (error :edit/unresolved :cause bad)
           {:model m' :changed changed :writes [[:level id]]})))))
 
+;; --- templates ---------------------------------------------------------------
+
+(def known-actions
+  "Connection actions the core implements (modeller.assembly/apply-action)."
+  #{:cut-to-face :end-plate :bolt-group})
+
+(defn- template-result->plan
+  "A template application's result as a plan: the assemblies it rewrote and
+  the connections it upserted or removed."
+  [{m' :model :keys [changed connections warnings]} extra-writes]
+  {:model m'
+   :changed changed
+   :warnings warnings
+   :writes (vec (concat extra-writes
+                        (map #(vector :assembly %) (sort-by str changed))
+                        (map #(vector :connection %) (:upsert connections))
+                        (map #(vector :connection/delete %) (:remove connections))))})
+
+(defmethod plan* :assembly/apply-template [m {ids :xline/ids tid :template/id size :size new-id :new-id}]
+  (let [tpl (get-in m [:templates tid])
+        new-id (or new-id random-uuid)]
+    (cond
+      (not= :assembly (:template/kind tpl)) (error :edit/unknown-template :template/id tid)
+      (empty? ids) (error :edit/no-xlines)
+      (not-every? (:xlines m) ids) (error :edit/unknown-xline :xline/ids ids)
+      :else
+      (let [r (reduce (fn [acc id]
+                        (let [r (template/apply-template (:model acc) id tpl size new-id)]
+                          (if (:error r)
+                            (reduced r)
+                            (-> acc
+                                (assoc :model (:model r))
+                                (update :changed into (:changed r))
+                                (update-in [:connections :upsert] into (get-in r [:connections :upsert]))
+                                (update-in [:connections :remove] into (get-in r [:connections :remove]))
+                                (update :warnings into (:warnings r))))))
+                      {:model m :changed #{} :connections {:upsert [] :remove []} :warnings []}
+                      ids)]
+        (if (:error r)
+          {:error (:error r)}
+          (template-result->plan r []))))))
+
+(defn- template-error [m {:template/keys [kind actions] :as t}]
+  (case kind
+    :connection (cond
+                  (not (seq actions)) {:reason :no-actions}
+                  (not-every? (comp known-actions :action/type) actions) {:reason :unknown-action})
+    :assembly (let [refs (keep #(get-in t [% :connection/template]) [:template/start :template/end])]
+                (when-not (every? #(= :connection (get-in m [:templates % :template/kind])) refs)
+                  {:reason :unknown-connection-template}))
+    {:reason :bad-kind}))
+
+(defmethod plan* :template/save [m {t :template new-id :new-id}]
+  (let [new-id (or new-id random-uuid)
+        t (cond-> t (nil? (:template/id t)) (assoc :template/id (new-id)))
+        id (:template/id t)]
+    (if-let [e (template-error m t)]
+      (error :edit/bad-template :reason (:reason e))
+      (let [m' (assoc-in m [:templates id] t)]
+        (case (:template/kind t)
+          ;; an assembly template re-applies wherever it is used
+          :assembly (template-result->plan (template/reapply m' t new-id) [[:template id]])
+          ;; a connection template regenerates the members that own one
+          :connection {:model m'
+                       :changed (set (keep #(when (= id (:connection/template %)) (:connection/owner %))
+                                           (vals (:connections m'))))
+                       :writes [[:template id]]})))))
+
 (defn plan
   "Validate and apply one source edit. {:model :changed :writes} or {:error}."
   [m edit]
@@ -219,13 +292,15 @@
 (defn patch
   "Upsert patch after an applied plan: instructions for the affected
   assemblies, plus the grid and levels when the edit wrote them."
-  [m {m' :model :keys [changed writes]}]
+  [m {m' :model :keys [changed writes] :as planned}]
   (let [{:keys [resolved instructions errors affected]} (core/edit m changed (constantly m'))
         kinds (set (map first writes))]
     (cond-> {:upsert instructions
              :resolved (resolved-summary resolved affected)
              :xlines (xline-summary (:xlines m') affected)
              :created (vec (keep #(when (= :assembly/create (first %)) (second %)) writes))
+             :warnings (vec (:warnings planned))
              :errors errors}
       (kinds :grid) (assoc :grid (:grid m'))
-      (kinds :level) (assoc :levels (:levels m')))))
+      (kinds :level) (assoc :levels (:levels m'))
+      (kinds :template) (assoc :templates (:templates m')))))
