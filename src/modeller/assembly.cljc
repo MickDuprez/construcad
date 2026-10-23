@@ -153,7 +153,7 @@
         (-> parts
             (slice-part part-id (approach-plane ctx (:action/face action) (+ gap t)))
             (assoc plate-id plate)
-            (assoc-in [::plates (:connection/end conn)] {:id plate-id :frame f :t t}))))))
+            (assoc-in [::plates (:connection/end conn)] {:id plate-id :frame f :t t :gap gap}))))))
 
 (defmethod apply-action :bolt-group
   ;; Holes through the end plate made by this connection, and the bolts in
@@ -162,8 +162,12 @@
   ;; :bolt-length (default plate + support flange + 30), :hole-overrun (how
   ;; far the hole cutter runs past each plate face, default 10). The hole is
   ;; a cutting solid only; each bolt is its own solid at the real bolt length.
+  ;; The matching holes in the supporting member go in ::support-cuts: they
+  ;; run from inside the plate, across the gap and through the support's
+  ;; flange (:tf), overrunning by the same amount; the support's own assembly
+  ;; picks them up (see support-cuts).
   [{:keys [params conn support-data]} action parts]
-  (let [{plate-id :id f :frame t :t} (get-in parts [::plates (:connection/end conn)])]
+  (let [{plate-id :id f :frame t :t gap :gap} (get-in parts [::plates (:connection/end conn)])]
     (if-not plate-id
       (update parts ::errors conj {:error/type :action/no-plate :action action})
       (let [rows (long (get params :rows 2)) cols (long (get params :cols 2))
@@ -184,8 +188,15 @@
                     (instr/transform (-> (frame/translate f [x y t])
                                          (assoc :x (v/neg (:x f)) :z (v/neg (:z f))))
                                      (instr/cylinder (/ bolt 2.0) len)))
+            flipped (fn [x y z] (-> (frame/translate f [x y z])
+                                    (assoc :x (v/neg (:x f)) :z (v/neg (:z f)))))
+            support-tools (for [[x y] centres]
+                            (instr/transform (flipped x y over)
+                                             (instr/cylinder (/ hole 2.0)
+                                                             (+ over (or gap 0) (:tf support-data 10) over))))
             bolts-id (end-key conn "bolts")]
         (-> parts
+            (update ::support-cuts (fnil into []) support-tools)
             (update plate-id #(assoc (instr/subtract (dissoc % :id :part/kind :part/size) hole-tools)
                                      :id plate-id :part/kind :plate :part/size (:part/size %)))
             (assoc bolts-id (assoc (instr/group bolts) :id bolts-id :part/kind :bolts
@@ -218,24 +229,60 @@
      :params params
      :param-errors errors}))
 
+(defn- own-parts
+  "Part id -> instruction for an XLine's own parts, before any connection."
+  [model xline length]
+  (let [built (map #(part-instruction model % length) (:assembly/parts xline))]
+    {:built built
+     :parts (into {::main (:part/id (main-part xline)) ::errors []}
+                  (keep #(when (:id %) [(:id %) %]) built))}))
+
+(defn- apply-connection [model resolved id xline parts conn]
+  (if-let [e (model/connection-error model conn)]
+    (update parts ::errors conj e)
+    (let [ctx (connection-context model resolved id xline conn)
+          tpl (get-in model [:templates (:connection/template conn)])]
+      (reduce #(apply-action ctx %2 %1)
+              (update parts ::errors into (:param-errors ctx))
+              (:template/actions tpl)))))
+
+(defn support-cuts
+  "Cutting solids that connections owned by other XLines put into XLine
+  `id` (bolt holes through a column flange), in `id`'s construction space.
+  Each is worked out by building the owner's parts and running that one
+  connection, then carried from the owner's space into this one."
+  [model resolved id]
+  (for [conn (vals (:connections model))
+        :when (and (= id (first (:connection/refs conn)))
+                   (not= id (:connection/owner conn))
+                   (nil? (model/connection-error model conn)))
+        :let [owner-id (:connection/owner conn)
+              owner (get-in model [:xlines owner-id])
+              {:keys [frame length]} (get resolved owner-id)]
+        :when frame
+        :let [{:keys [parts]} (own-parts model owner length)
+              cuts (::support-cuts (apply-connection model resolved owner-id owner parts conn))
+              to-here (frame/relative (get-in resolved [id :frame]) frame)]
+        cut cuts]
+    (if (= :transform (:op cut))
+      (instr/transform (frame/compose to-here (:frame cut)) (:child cut))
+      (instr/transform to-here cut))))
+
 (defn assembly-instruction
   "Instructions for one XLine-rooted assembly. Returns {:instr i :errors [...]}."
   [model resolved id]
   (let [xline (get-in model [:xlines id])
         {:keys [frame length]} (get resolved id)
-        built (map #(part-instruction model % length) (:assembly/parts xline))
-        parts (into {::main (:part/id (main-part xline)) ::errors []}
-                    (keep #(when (:id %) [(:id %) %]) built))
+        {:keys [built parts]} (own-parts model xline length)
         owned (filter #(= id (:connection/owner %)) (vals (:connections model)))
-        parts (reduce (fn [parts conn]
-                        (if-let [e (model/connection-error model conn)]
-                          (update parts ::errors conj e)
-                          (let [ctx (connection-context model resolved id xline conn)
-                                tpl (get-in model [:templates (:connection/template conn)])]
-                            (reduce #(apply-action ctx %2 %1)
-                                    (update parts ::errors into (:param-errors ctx))
-                                    (:template/actions tpl)))))
-                      parts owned)
+        parts (reduce #(apply-connection model resolved id xline %1 %2) parts owned)
+        main-id (::main parts)
+        cuts (support-cuts model resolved id)
+        parts (if (and (seq cuts) (get parts main-id))
+                (update parts main-id #(merge (select-keys % [:part/kind :part/size])
+                                              (assoc (instr/subtract (dissoc % :id :part/kind :part/size) cuts)
+                                                     :id main-id)))
+                parts)
         order (map :part/id (:assembly/parts xline))
         ;; parts the connections added (plates, bolts), after the XLine's own
         added (sort-by str (remove (set order) (filter #(and (keyword? %) (nil? (namespace %))) (keys parts))))]

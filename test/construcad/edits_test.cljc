@@ -261,3 +261,21 @@
             parts (set (map :id (get-in instructions [b2 :child :children])))]
         (is (not (contains? parts :plate-start)))))))
 
+(deftest a-supports-page-shows-the-holes-others-bolt-into-it
+  (let [{m :model} (seeded)
+        b2 (by-mark m "B2")
+        c2 (some #(when (= b2 (:connection/owner %)) (first (:connection/refs %))) (vals (:connections m)))
+        {:keys [state context]} (edits/assembly-page m c2)]
+    (testing "the context carries B2's connection into the column, and B2 to work it out"
+      (is (contains? (set (keys (:xlines context))) b2))
+      (is (= [b2] (distinct (map :connection/owner (vals (:connections context)))))))
+    (testing "the seed's column names no insertion point: the page shows it where the core puts it"
+      (is (= :centre (get-in state [:main :part/insert]))))
+    (testing "regenerated in the browser, the column matches the server's, holes and all"
+      (let [{:keys [instructions errors]} (te/instance-preview lib (:templates m) context state)
+            real (get-in (edits/view m [c2]) [:instructions c2])]
+        (is (empty? errors))
+        (is (= [c2] (keys instructions)))
+        (is (= :subtract (get-in real [:child :children 1 :op])))
+        (is (= real (get instructions c2)))))))
+

@@ -2,6 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [modeller.core :as core]
             [modeller.fixtures :as fx]
+            [modeller.frame :as frame]
+            [modeller.model :as model]
             [modeller.params :as params]
             [modeller.template :as template]
             [modeller.vec :as v]))
@@ -117,3 +119,28 @@
     (testing "an end set to nothing loses its connection"
       (let [r (template/update-assembly model (assoc state :start nil) (counter))]
         (is (= [:conn-1] (get-in r [:connections :remove])))))))
+
+(deftest bolt-holes-in-the-support
+  (let [{:keys [model]} (applied)
+        {:keys [instructions errors]} (core/regenerate model [:b-2 :c-b2])
+        col (part (:c-b2 instructions) :main)
+        b2 (:b-2 instructions)
+        world (fn [instr local-frame] (frame/compose (:frame instr) local-frame))]
+    (is (empty? errors))
+    (testing "column C-B2's main part is drilled for the four end-plate bolts"
+      (is (= :subtract (:op col)))
+      (is (= 4 (count (:tools col)))))
+    (testing "each hole lines up with a bolt, through plate gap and flange"
+      (let [hole-axes (set (for [t (:tools col)]
+                             (let [f (world (:c-b2 instructions) (:frame t))]
+                               (mapv #(Math/round (double %)) (:o f)))))
+            bolt-starts (for [b (:children (part b2 :bolts-end))]
+                          (let [f (world b2 (:frame b))
+                                ;; the support cutter starts 10 inside the plate's support face,
+                                ;; the bolt at the plate's owner face: 12 - 10 = 2 further back
+                                o (v/v+ (:o f) (v/scale (:z f) 2))]
+                            (mapv #(Math/round (double %)) o)))]
+        (is (every? hole-axes bolt-starts))
+        (is (v/nearly= (+ 10 0 11.0 10) (get-in (first (:tools col)) [:child :length])))))
+    (testing "editing the beam regenerates the column it is bolted to"
+      (is (contains? (model/affected model [:b-2]) :c-b2)))))

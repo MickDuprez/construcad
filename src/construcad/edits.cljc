@@ -318,18 +318,22 @@
 (defn assembly-context
   "The records one assembly's regeneration needs: its XLine and every XLine
   its nodes depend on (transitively), the grid and levels they resolve
-  against, and the connections it owns. Templates are left out; the page
-  has them."
+  against, the connections it owns, and the connections others own that
+  bolt into it, with their owners (they cut its holes). Templates are left
+  out; the page has them."
   [m id]
   (let [xlines (:xlines m)
-        ids (loop [seen #{} queue [id]]
+        conns (into {} (filter #(or (= id (:connection/owner (val %)))
+                                    (= id (first (:connection/refs (val %))))))
+                    (:connections m))
+        ids (loop [seen #{} queue (into [id] (keep :connection/owner) (vals conns))]
               (if-let [x (first queue)]
                 (recur (conj seen x) (into (subvec queue 1)
                                            (remove seen (filter xlines (model/xline-deps (xlines x))))))
                 seen))]
     {:grid (:grid m) :levels (:levels m)
      :xlines (select-keys xlines ids)
-     :connections (into {} (filter #(= id (:connection/owner (val %)))) (:connections m))}))
+     :connections conns}))
 
 (defn assembly-page
   "What the assembly page needs to edit one assembly: its state

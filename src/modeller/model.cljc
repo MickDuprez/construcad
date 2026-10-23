@@ -81,14 +81,22 @@
 
 (defn affected
   "Every XLine id that regenerates after `changed` ids are edited, including
-  the changed ones."
+  the changed ones. The XLines that regenerating owners connect to are
+  added too, one step only: they carry the owner's bolt holes, but their own
+  geometry does not move, so nothing hanging off them needs to follow."
   [model changed]
-  (let [deps (dependents model)]
-    (loop [seen (set changed) queue (vec changed)]
-      (if-let [id (first queue)]
-        (let [new (remove seen (deps id))]
-          (recur (into seen new) (into (subvec queue 1) new)))
-        seen))))
+  (let [deps (dependents model)
+        moved (loop [seen (set changed) queue (vec changed)]
+                (if-let [id (first queue)]
+                  (let [new (remove seen (deps id))]
+                    (recur (into seen new) (into (subvec queue 1) new)))
+                  seen))]
+    (into moved
+          (for [c (vals (:connections model))
+                :when (moved (:connection/owner c))
+                ref (:connection/refs c)
+                :when (get-in model [:xlines ref])]
+            ref))))
 
 (defn connection-error
   "A connection is only valid where it physically is: the owner's end node

@@ -66,7 +66,8 @@
         (is (v/nearly= [0 0 5000] (get-in r [:b-1 :start])))))))
 
 (deftest dependencies
-  (is (= #{:c-a1 :b-1} (model/affected fx/model [:c-a1])))
+  (testing "C-B1 follows because B-1, which moves, is connected to it (its holes)"
+    (is (= #{:c-a1 :b-1 :c-b1} (model/affected fx/model [:c-a1]))))
   (is (= #{:b-2 :c-b2} (model/affected fx/model [:c-b2])))
   (is (= #{:p-a} (model/affected fx/model [:p-a])))
   (testing "edit regenerates only what changed"
@@ -74,7 +75,7 @@
           (core/edit fx/model [:c-a1]
                      #(assoc-in % [:xlines :c-a1 :xline/end :node/offset] [0 0 -200]))]
       (is (empty? errors))
-      (is (= #{:c-a1 :b-1} affected (set (keys instructions)))))))
+      (is (= #{:c-a1 :b-1 :c-b1} affected (set (keys instructions)))))))
 
 (deftest errors
   (testing "cycles"
