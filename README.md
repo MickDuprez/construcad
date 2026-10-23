@@ -37,14 +37,14 @@ model in the middle and the properties of the selected assembly on the right.
   highlights it. **Double-click** it, or right-click > **Edit assembly**,
   to open its assembly page.
 - **Properties** (right, collapsible with **›**): mark, role, size, level,
-  length, template (or "edited by hand, from" one), **Edit assembly**, each
-  end's connection template and what it sits on with **Edit start/end
-  connection** (opens the connection editor on that template, previewed at
-  this member's size against its support's, as a column or a beam as the
-  support's role says), and the parts list (main member, each end's plate
-  and bolts with sizes and counts). The ends come from the assembly's page
-  data, fetched when it is selected. **Apply a template** for the selection
-  sits below.
+  length, the library template it came from ("from library: ..."), **Edit
+  assembly**, each end's connection by name, the library template it was
+  copied from and what it sits on, with **Edit start/end connection…**
+  (the connection editor in instance mode, on this assembly's own copy,
+  previewed on the real member and its support), and the parts list (main
+  member, each end's plate and bolts with sizes and counts). The ends come
+  from the assembly's page data, fetched when it is selected. **Apply a
+  template** for the selection sits below.
 - **Toolbar**: Select and XLine tools, the role new XLines get, display mode,
   XLines on/off, zoom extents, and **Levels & grid** and **Templates**, which
   open over the model.
@@ -81,61 +81,89 @@ member's data, e.g. `(:tf support)`) and the other numeric parameters, e.g.
 `:plate-h "(+ d 20)"`. A new project starts with a small library (square cut,
 end plate with four bolts, and beams and a column built from them).
 
-- The toolbar's **Templates** lists both kinds: **Edit**, **Copy**
-  (saves as a new template), **New assembly**, **New connection**.
-- The **assembly page** edits an assembly template. It shows the main
-  member on its XLine and nothing else. Its one **Assembly** view, in 3D,
-  shows the member and its own parts (plates, bolts, holes, end cuts) as
-  its connections make them, and its XLine as a thin line with a ball at
-  each node, so offsets and extensions show against it. It lays the XLine
-  along the view whichever way the member runs and opens side-on (looking
-  at the web, start on the left); drag to orbit, pan and zoom, and **Iso**,
-  **Plan**, **Side** and **End** snap back. An end with a connection is
-  made against a sample column (the connection editor's default support),
-  which is not drawn. Top left, beside the view, the member is shown end-on
-  at a preview size (top flange up, across the view is the XLine's local X),
-  where you click one of the nine points to put it on the XLine (the
-  cross), type the offsets, pick a rotation (0/90/180/270 or typed) and the
-  extensions. The **Start** and **End** cards sit side by side below, like
-  the member's ends (everything stacks in one column on a narrow window).
-  The two cards pick a
-  connection template (or none) and take per-end overrides of its
-  parameters, with a link to the connection editor, which opens on top and
-  returns to the page. A card can't know what its end will sit on, so a
-  parameter worked out from `support` shows as "from the support".
-  `:template/role` ("Usually for") only orders the size pickers: applying a
-  template never changes a member's role, which is chosen when it is drawn.
-- The **connection template editor** is where a connection is seen. A
-  connection template knows nothing of member roles, only the two ECSs it
-  joins and how (cut, plate, bolts...), so one template serves a beam into a
-  column and a joist into a beam. It orders the actions (add, ↑ ↓, remove),
-  edits the parameters (a formula's error shows on its row) and previews an
-  owner of one size framing into a support of another, the support either a
-  vertical column (the default) or a horizontal beam the owner meets at 90
-  degrees, tops flush, both sized from the library.
+**Templates are starting points, copied and never linked.** Applying an
+assembly template copies its placement into the assembly, and each end's
+connection template into that end's connection: its own name, actions and
+parameters (`:connection/name`, `:connection/actions`, `:connection/params`).
+Both note where they came from (`:assembly/from-template`,
+`:connection/from-template`: the template's id and name), and nothing more.
+So saving a library template changes no assembly, and editing an assembly's
+connection changes neither the library nor any other assembly. To take a
+library change into an assembly, use **Re-apply from library…** on its page,
+which copies the template as it is now.
+
+- The toolbar's **Templates** lists both kinds, each with a thumbnail of its
+  preview: **Edit**, **Copy** (saves as a new template), **New assembly**,
+  **New connection**.
+- The **assembly page** is split in two. On the left, the insertion panel:
+  the member end-on at the page's size (top flange up, across the view is the
+  XLine's local X), where you click one of the nine points to put it on the
+  XLine (the cross), the offsets, a rotation (0/90/180/270 or typed) and the
+  extensions. On the right, the 3D **Assembly** view of the member and its
+  own parts (plates, bolts, holes, end cuts), its XLine as a thin line with a
+  ball at each node, laid along the view whichever way the member runs and
+  opening side-on (looking at the web, start on the left); drag to orbit,
+  pan and zoom, and **Iso**, **Plan**, **Side** and **End** snap back. The
+  **Start** card sits on the view's left edge and the **End** card on its
+  right, each showing just the end's connection by name (with the library
+  template's thumbnail) and **Edit connection…**. Everything stacks on a
+  narrow window.
+- **Template mode** (from the Templates panel) edits an assembly template on
+  a virtual sample member, its ends made against sample columns (not drawn).
+  An end card picks a library connection template (or none); **Edit
+  connection…** opens that template in the library. `:template/role`
+  ("Usually for") only orders the size pickers: applying a template never
+  changes a member's role, which is chosen when it is drawn.
+- **Instance mode** (**Edit assembly**, double-click in the tree or
+  right-click > Edit assembly) edits one assembly, loaded from the server
+  (`GET /api/buildings/:id/assemblies/:xid`, which runs
+  `modeller.template/assembly-state`). It adds the mark, role and size, the
+  XLine's ends, length and rotation, and the template it came from. Its
+  Assembly view is the member as Save would make it, regenerated in the
+  browser against what its ends really sit on (the page data carries that
+  context: the XLine, the XLines its nodes hang off, the grid and levels, its
+  connections, and the connections other members bolt into it, which drill
+  its holes), still drawn alone. Each end card says what the end sits on;
+  **Edit connection…** opens the connection editor in instance mode, and
+  **Replace with…** swaps the end for a fresh copy of a library connection
+  template. **Save** sends `:assembly/update` (and `:xline/set-rotation` if
+  that changed). **Re-apply from library…** applies a template (the one it
+  came from first) at a size to this member again.
+- The **connection editor** orders the actions (add, ↑ ↓, remove), edits the
+  parameters (a formula's error shows on its row) and previews the
+  connection. A connection template knows nothing of member roles, only the
+  two ECSs it joins and how (cut, plate, bolts...), so one template serves a
+  beam into a column and a joist into a beam.
+  - **Library mode** (from the Templates panel or an assembly template's end)
+    edits the library template, previewed on a sample owner of one size
+    framing into a sample support of another, the support either a vertical
+    column (the default) or a horizontal beam the owner meets at 90 degrees,
+    tops flush, both sized from the library. **Save** sends `:template/save`
+    with a 240 x 160 PNG thumbnail of the preview (`:template/thumbnail`),
+    and changes the library only.
+  - **Instance mode** (from an assembly's end card, or **Edit start/end
+    connection…** in the properties) edits that connection's own copy,
+    previewed on the real member and the real member that end sits on, where
+    they are in the model. It says which library template the copy came
+    from. **Save** sends `:connection/update`, which regenerates the member
+    and what it bolts into; **Save as new library template** puts a copy in
+    the library (with a thumbnail of the real connection), and the
+    connection then notes it came from there once it is saved.
 - Previews regenerate in the browser with `modeller.core` and the in-browser
   section library (`construcad.template-edit`), so nothing goes to the server
-  until **Save**, which sends a `:template/save` edit. Every member built from
-  the template regenerates, and the patch reaches every open viewer.
+  until **Save**.
 - To apply one to many members, select them (Shift + click adds or
   removes), choose the template and the size under **Apply a template**,
   and **Apply** (`:assembly/apply-template`). The supporting member of each
   end is read from the end node; an end that isn't on another XLine gets no
   connection, and the status bar says so.
-- **Edit assembly** opens the same page in instance mode for one member,
-  loaded from the server (`GET /api/buildings/:id/assemblies/:xid`, which
-  runs `modeller.template/assembly-state`). It adds the mark, role and size,
-  the XLine's ends, length and rotation, says which template the member came
-  from, and each card says what that end sits on and resolves the parameters
-  against it. Its Assembly view is the member as Save would make it,
-  regenerated in the browser against what its ends really sit on (the page
-  data carries that context: the XLine, the XLines its nodes hang off, the
-  grid and levels, its connections, and the connections other members bolt
-  into it, which drill its holes), still drawn alone.
-  **Save** sends `:assembly/update` (and `:xline/set-rotation`
-  if that changed); a hand-edited assembly detaches from its template
-  (template edits no longer change it; it remembers where it came from).
-  **Apply template…** applies a template at a size to this member instead.
+
+Records from before templates were copied still load: a connection with a
+`:connection/template` id and no actions of its own is built through that
+library template with its per-end overrides (`modeller.assembly/own-recipe`)
+and becomes a copy the next time it, or its assembly, is saved; an
+assembly's `:assembly/template` (the old live link) or bare
+`:assembly/from-template` id reads as where it came from.
 
 Holes are cut: the reader realises `:subtract` (and `:union`, `:intersect`)
 with three-bvh-csg; bolts are cylinders.
@@ -157,7 +185,7 @@ viewer over a websocket. The browser never sends geometry.
 | `construcad.api` | EDN endpoints (projects, buildings, view, templates, one assembly, edits) and the patch websocket |
 | `construcad.app.reader` | instructions to three.js; `construcad.app.slice` cuts and caps meshes |
 | `construcad.app.viewport` | camera, navigation, view cube, hidden-line display, picking |
-| `construcad.app.templates` | template library panel, assembly page (templates and single assemblies), connection editor |
+| `construcad.app.templates` | template library panel (thumbnails), assembly page (templates and single assemblies), connection editor (library and instance modes) |
 | `construcad.app.mini-view` | the small 3D views in the template editors (the assembly page's Assembly view, the connection preview) |
 | `construcad.app.main` | toolbar, navigator, properties, XLine tool, grips, selection, context menu, applying templates, server round trip |
 
@@ -176,9 +204,9 @@ viewer over a websocket. The browser never sends geometry.
 | `modeller.shapes` | standard shape builders: rect, I, channel, angle, RHS/SHS, CHS |
 | `modeller.sections-au` | 120 AU hot rolled sections from the ASI 8th edition tables (UB, UC, UBP, PFC, EA, UA), plus placeholder hollow sections |
 | `modeller.instr` | the reader instruction algebra |
-| `modeller.assembly` | parts to instructions, connection actions (`:cut-to-face`, `:end-plate`, `:bolt-group`) |
+| `modeller.assembly` | parts to instructions, connection actions (`:cut-to-face`, `:end-plate`, `:bolt-group`) from each connection's own recipe |
 | `modeller.params` | template parameters: numbers or SCI formulas over section data |
-| `modeller.template` | assembly templates: apply to an XLine at a size, re-apply where used |
+| `modeller.template` | templates: copy an assembly template onto an XLine at a size, connection copies and provenance, one connection's update |
 | `modeller.core` | `regenerate` and `edit` entry points |
 
 ## Tests
