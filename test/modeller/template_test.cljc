@@ -63,7 +63,11 @@
       (is (= :subtract (:op plate)))
       (is (v/nearly= [0 -152.0 7898.3] (get-in plate [:target :frame :o])))
       (is (v/nearly= [0 0 -1] (get-in plate [:target :frame :z])))
-      (is (= 4 (count (:tools plate)))))
+      (is (= 4 (count (:tools plate))))
+      (testing "hole cutters overrun both faces by 10, bolts keep their own length"
+        (let [tool (first (:tools plate))]
+          (is (v/nearly= 32.0 (get-in tool [:child :length])))
+          (is (v/nearly= 7908.3 (get-in tool [:frame :o 2]))))))
     (testing "four bolts at gauge 90 and pitch d - 2tf - 80"
       (is (= 4 (get-in bolts [:part/size :count])))
       (let [ys (sort (distinct (map #(Math/round (* 10 (get-in % [:frame :o 1]))) (:children bolts))))]

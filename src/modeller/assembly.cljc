@@ -159,7 +159,9 @@
   ;; Holes through the end plate made by this connection, and the bolts in
   ;; them. Parameters: :rows :cols (default 2 x 2), :gauge (across, default
   ;; 90), :pitch (up, default 70), :bolt-dia (20), :hole-dia (bolt + 2),
-  ;; :bolt-length (default plate + support flange + 30).
+  ;; :bolt-length (default plate + support flange + 30), :hole-overrun (how
+  ;; far the hole cutter runs past each plate face, default 10). The hole is
+  ;; a cutting solid only; each bolt is its own solid at the real bolt length.
   [{:keys [params conn support-data]} action parts]
   (let [{plate-id :id f :frame t :t} (get-in parts [::plates (:connection/end conn)])]
     (if-not plate-id
@@ -172,8 +174,12 @@
                       [(* gauge (- i (/ (dec cols) 2.0))) (* pitch (- j (/ (dec rows) 2.0)))])
             ;; holes run through the plate along its +Z; bolts start at the plate's
             ;; outer face and run back through it into the support
+            ;; the hole cutter runs well past both plate faces, so the boolean never
+            ;; meets a coplanar face (that is what leaves facets and flicker)
+            over (get params :hole-overrun 10)
             hole-tools (for [[x y] centres]
-                         (instr/transform (frame/translate f [x y -1]) (instr/cylinder (/ hole 2.0) (+ t 2))))
+                         (instr/transform (frame/translate f [x y (- over)])
+                                          (instr/cylinder (/ hole 2.0) (+ t over over))))
             bolts (for [[x y] centres]
                     (instr/transform (-> (frame/translate f [x y t])
                                          (assoc :x (v/neg (:x f)) :z (v/neg (:z f))))
