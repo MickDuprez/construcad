@@ -122,3 +122,13 @@
     (let [l (apply min-key #(Math/abs (double (- z (:level/elevation %)))) levels)]
       {:level (:level/name l) :offset (- z (:level/elevation l))})))
 
+
+(defn level-at-or-below
+  "The level a point at elevation z belongs to: the highest level at or below
+  it (within 1 mm), or the lowest level when z is under every level."
+  [levels z]
+  (when (seq levels)
+    (let [below (filter #(<= (:level/elevation %) (+ z 1)) levels)]
+      (if (seq below)
+        (apply max-key :level/elevation below)
+        (apply min-key :level/elevation levels)))))

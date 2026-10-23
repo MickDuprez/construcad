@@ -284,9 +284,13 @@
   (into {} (for [id ids :let [r (resolved id)] :when r]
              [id (select-keys r [:start :end :length])])))
 
-(defn- xline-summary [xlines ids]
+(defn- xline-summary
+  "The XLine records without their parts, plus the main part's profile
+  (:assembly/profile), which the navigator and properties show as its size."
+  [xlines ids]
   (into {} (for [id ids :let [x (xlines id)] :when x]
-             [id (dissoc x :assembly/parts)])))
+             [id (-> (dissoc x :assembly/parts)
+                     (assoc :assembly/profile (:part/profile (first (:assembly/parts x)))))])))
 
 (defn load-set
   "Assemblies on a level, plus everything they need to regenerate: the XLines
