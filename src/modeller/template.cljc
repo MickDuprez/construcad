@@ -129,6 +129,7 @@
        :assembly/mark (:assembly/mark x)
        :xline/role (:xline/role x)
        :assembly/template (:assembly/template x)
+       :assembly/from-template (:assembly/from-template x)
        :assembly/size (or (:assembly/size x) (:part/profile main))
        :main (select-keys main placement-keys)
        :start (end-state :start)

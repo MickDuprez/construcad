@@ -109,6 +109,8 @@
         (is (= 180 (get-in x [:assembly/parts 0 :part/rotation])))
         (is (nil? (:assembly/template x)))
         (is (= :tpl/beam-end-plates (:assembly/from-template x)))
+        (is (= :tpl/beam-end-plates (:assembly/from-template (template/assembly-state (:model r) :b-2)))
+            "the page says where a hand-edited assembly came from")
         (is (= :square-cut (get-in r [:model :connections :conn-2 :connection/template])))
         (testing "so re-applying the template leaves it alone"
           (is (empty? (:changed (template/reapply (:model r) (get-in r [:model :templates :tpl/beam-end-plates]))))))))
