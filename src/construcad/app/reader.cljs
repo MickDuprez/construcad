@@ -7,9 +7,11 @@
                         -> a solid: one mesh plus its visible and hidden edges
 
   Solids are built as plain triangle soup (non-indexed, position only), so
-  :slice can cut them (construcad.app.slice). Every object carries a
-  userData.renderRole the display modes switch on."
+  :slice can cut them (construcad.app.slice); :subtract :union :intersect go
+  through three-bvh-csg. Every object carries a userData.renderRole the
+  display modes switch on."
   (:require ["three" :as THREE]
+            ["three-bvh-csg" :refer [Brush Evaluator SUBTRACTION ADDITION INTERSECTION]]
             [construcad.app.slice :as slice]
             [modeller.frame :as frame]
             [modeller.profile :as profile]))
@@ -49,15 +51,27 @@
 
 (declare ^js solid-geometry)
 
-(defn- boolean-fallback
-  "TODO: subtract/union/intersect need a mesh boolean kernel (manifold-3d is
-  the candidate). Until then show the target (subtract) or every solid
-  (union, intersect) uncut, and say so in the console."
-  [{:keys [op target solids] :as instr}]
-  (js/console.warn (str "construcad: " (name op) " is not realised yet; showing operands uncut") (clj->js (select-keys instr [:id])))
-  (if (= :subtract op)
-    (solid-geometry target)
-    (merge-soup (map solid-geometry solids))))
+(defonce ^:private evaluator
+  (delay (doto (Evaluator.)
+           (set! -attributes #js ["position"])
+           (set! -useGroups false))))
+
+(defn- brush [^js geometry]
+  (doto (Brush. geometry) (.updateMatrixWorld)))
+
+(defn- csg
+  "Fold `op` (SUBTRACTION, ADDITION, INTERSECTION) over solids' soups with
+  three-bvh-csg. A failed boolean shows the first operand and says so."
+  [instr op geometries]
+  (try
+    (let [^js result (reduce (fn [^js acc ^js g] (.evaluate @evaluator acc (brush g) op))
+                             (brush (first geometries))
+                             (rest geometries))]
+      (soup (.-geometry result)))
+    (catch :default e
+      (js/console.warn "construcad: boolean failed; showing the first operand uncut"
+                       (clj->js (select-keys instr [:id :op])) e)
+      (first geometries))))
 
 (defn ^js solid-geometry
   "Triangle soup for a solid instruction, in the instruction's own space."
@@ -73,7 +87,9 @@
     :transform (let [^js g (solid-geometry (:child instr))] (.applyMatrix4 g (frame-matrix (:frame instr))))
     :group (merge-soup (keep #(when (not= :xline (:op %)) (solid-geometry %)) (:children instr)))
     :slice (slice/slice (solid-geometry (:target instr)) (:plane instr) (:keep instr))
-    (:subtract :union :intersect) (boolean-fallback instr)))
+    :subtract (csg instr SUBTRACTION (map solid-geometry (cons (:target instr) (:tools instr))))
+    :union (csg instr ADDITION (map solid-geometry (:solids instr)))
+    :intersect (csg instr INTERSECTION (map solid-geometry (:solids instr)))))
 
 ;; --- display objects -------------------------------------------------------------
 
