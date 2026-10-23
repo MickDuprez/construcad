@@ -12,6 +12,8 @@
     {:edit/type :level/set-elevation :level/id id :elevation 4500}
     {:edit/type :assembly/apply-template :xline/ids [id ...] :template/id tid :size \"310UB40.4\"}
     {:edit/type :template/save      :template {...}}   ; connection or assembly template
+    {:edit/type :assembly/update    :state {...}}      ; one assembly, from the assembly page
+                                                       ; (shape: modeller.template/assembly-state)
 
   `plan` returns {:model m' :changed #{xline ids} :writes [record ...]} or
   {:error e}. A record is [:assembly id], [:assembly/create id], [:grid],
@@ -82,13 +84,23 @@
                         (or (nil? level-name) (= level-name (:node/level ref))))]
          id)))
 
-(def default-parts
-  {:column [{:part/id :main :part/kind :extrusion :part/profile "200UC46.2"}]
-   :beam [{:part/id :main :part/kind :extrusion :part/profile "310UB40.4"
-           :part/insert :top-centre}]})
+(def roles
+  "Member roles, chosen when an assembly is created. Templates never change them."
+  #{:column :beam :rafter :joist :purlin :girt :brace :panel})
+
+(defn default-parts [role]
+  (case role
+    :column [{:part/id :main :part/kind :extrusion :part/profile "200UC46.2"}]
+    :brace [{:part/id :main :part/kind :extrusion :part/profile "75x75x6EA"}]
+    :panel [{:part/id :panel :part/kind :extrusion
+             :part/profile {:section/builder :rect :b 150 :d 3000} :part/insert :bottom-centre}]
+    [{:part/id :main :part/kind :extrusion :part/profile "310UB40.4" :part/insert :top-centre}]))
+
+(def mark-prefix
+  {:column "C" :beam "B" :rafter "R" :joist "J" :purlin "P" :girt "G" :brace "BR" :panel "TP"})
 
 (defn- next-mark [xlines role]
-  (let [prefix (if (= :column role) "C" "B")
+  (let [prefix (mark-prefix role "B")
         used (keep #(when (= role (:xline/role %)) (:assembly/mark %)) (vals xlines))]
     (str prefix (inc (count used)))))
 
@@ -131,7 +143,7 @@
   (let [role (or role :beam)]
     (cond
       (contains? (:xlines m) id) (error :edit/duplicate-id :xline/id id)
-      (not (contains? default-parts role)) (error :edit/bad-role :role role)
+      (not (contains? roles role)) (error :edit/bad-role :role role)
       :else
       (if-let [[e which] (or (some-> (node-error m start :start) (vector :start))
                              (some-> (node-error m end :end) (vector :end)))]
@@ -220,6 +232,16 @@
         (if (:error r)
           {:error (:error r)}
           (template-result->plan r []))))))
+
+(defmethod plan* :assembly/update [m {state :state new-id :new-id}]
+  (let [id (:xline/id state)
+        conn-ok? #(or (nil? %) (= :connection (get-in m [:templates (:connection/template %) :template/kind])))]
+    (cond
+      (not (contains? (:xlines m) id)) (error :edit/unknown-xline :xline/id id)
+      (and (:xline/role state) (not (roles (:xline/role state)))) (error :edit/bad-role :role (:xline/role state))
+      (not (and (conn-ok? (:start state)) (conn-ok? (:end state)))) (error :edit/unknown-template)
+      :else (let [r (template/update-assembly m state (or new-id random-uuid))]
+              (if (:error r) {:error (:error r)} (template-result->plan r []))))))
 
 (defn- template-error [m {:template/keys [kind actions] :as t}]
   (case kind

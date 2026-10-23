@@ -3,6 +3,7 @@
             [construcad.edits :as edits]
             [construcad.records :as records]
             [construcad.seed :as seed]
+            [modeller.template]
             [modeller.library :as library]
             [modeller.sections-au :as au]
             [modeller.vec :as v]))
@@ -200,3 +201,25 @@
                                                :template/start {:connection/template (random-uuid)}}})
                      [:error :reason]))))))
 
+
+(deftest assembly-page-edits
+  (let [{m :model} (seeded)
+        b2 (by-mark m "B2")
+        state (modeller.template/assembly-state m b2)
+        p (edits/plan m {:edit/type :assembly/update :state (assoc state :assembly/size "250UB31.4")})]
+    (is (nil? (:error p)))
+    (is (= #{b2} (:changed p)))
+    (is (= "250UB31.4" (get-in p [:model :xlines b2 :assembly/size])))
+    (testing "refused: unknown role or connection template"
+      (is (= :edit/bad-role (get-in (edits/plan m {:edit/type :assembly/update :state (assoc state :xline/role :spaceship)})
+                                    [:error :error/type])))
+      (is (= :edit/unknown-template
+             (get-in (edits/plan m {:edit/type :assembly/update
+                                    :state (assoc state :start {:connection/template (random-uuid)})})
+                     [:error :error/type]))))
+    (testing "new roles can be created"
+      (let [c1 (by-mark m "C1") c2 (by-mark m "C2")
+            p (edits/plan m {:edit/type :xline/create :xline/id (random-uuid) :role :joist
+                             :start {:node/of c1 :node/end :end} :end {:node/of c2 :node/end :end}})]
+        (is (nil? (:error p)))
+        (is (= "J1" (:assembly/mark (get-in (:model p) [:xlines (first (:changed p))]))))))))

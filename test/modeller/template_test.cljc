@@ -83,3 +83,35 @@
     (is (= #{:b-2} (:changed r)))
     (is (= [:conn-2] (get-in r [:connections :remove])))
     (is (= "310UB40.4" (get-in r [:model :xlines :b-2 :assembly/size])))))
+
+(deftest templates-keep-the-member-role
+  (let [m (assoc-in fx/model [:xlines :b-2 :xline/role] :joist)
+        r (template/apply-template m :b-2 (get-in m [:templates :tpl/beam-end-plates]) "310UB40.4" (counter))]
+    (is (= :joist (get-in r [:model :xlines :b-2 :xline/role])))))
+
+(deftest editing-one-assembly
+  (let [{:keys [model]} (applied)
+        state (template/assembly-state model :b-2)]
+    (testing "the page's state reads back what the template made"
+      (is (= "310UB40.4" (:assembly/size state)))
+      (is (= :top-centre (get-in state [:main :part/insert])))
+      (is (= :conn/end-plate (get-in state [:start :connection/template])))
+      (is (= {:start :c-a2 :end :c-b2} (:supports state))))
+    (testing "an edit changes size, placement and one end, and detaches from the template"
+      (let [r (template/update-assembly model (-> state
+                                                  (assoc :assembly/size "250UB31.4" :assembly/mark "B9")
+                                                  (assoc-in [:main :part/rotation] 180)
+                                                  (assoc :end {:connection/template :square-cut}))
+                                        (counter))
+            x (get-in r [:model :xlines :b-2])]
+        (is (= "250UB31.4" (:assembly/size x)))
+        (is (= "B9" (:assembly/mark x)))
+        (is (= 180 (get-in x [:assembly/parts 0 :part/rotation])))
+        (is (nil? (:assembly/template x)))
+        (is (= :tpl/beam-end-plates (:assembly/from-template x)))
+        (is (= :square-cut (get-in r [:model :connections :conn-2 :connection/template])))
+        (testing "so re-applying the template leaves it alone"
+          (is (empty? (:changed (template/reapply (:model r) (get-in r [:model :templates :tpl/beam-end-plates]))))))))
+    (testing "an end set to nothing loses its connection"
+      (let [r (template/update-assembly model (assoc state :start nil) (counter))]
+        (is (= [:conn-1] (get-in r [:connections :remove])))))))

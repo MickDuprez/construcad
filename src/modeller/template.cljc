@@ -6,7 +6,7 @@
     {:template/id    :tpl/beam-end-plates
      :template/kind  :assembly
      :template/name  \"Beam, end plates both ends\"
-     :template/role  :beam
+     :template/role  :beam          ; a hint for size pickers only
      :template/main  {:part/insert :top-centre :part/offset [0 0] :part/rotation 0
                       :part/start-ext 0 :part/end-ext 0}
      :template/start {:connection/template :conn/end-plate :connection/params {}}
@@ -15,7 +15,12 @@
   Applying it to an XLine writes the main part with the chosen size and makes
   one connection per end whose node sits on another XLine; the supporting
   XLine is read from the node itself. The XLine remembers the template and
-  size, so editing the template later re-applies it everywhere it is used."
+  size, so editing the template later re-applies it everywhere it is used.
+
+  A connection template knows nothing about member roles: only the two ECSs
+  it joins and how (cut, plate, fin plate...). So the same template serves a
+  beam to column or a joist to beam, and applying a template never changes
+  the member's role, which is set when the assembly is created."
   (:require [modeller.node :as node]))
 
 (defn supporting-xline
@@ -52,8 +57,7 @@
             xline' (assoc xline
                           :assembly/parts (into [main] (:template/extra-parts template))
                           :assembly/template (:template/id template)
-                          :assembly/size size
-                          :xline/role (or (:template/role template) (:xline/role xline)))
+                          :assembly/size size)
             ends (for [end [:start :end]
                        :let [condition (get template (if (= :start end) :template/start :template/end))
                              cid (or (existing-connection m xline-id end) (new-id))
@@ -103,3 +107,50 @@
                     (update :warnings into (:warnings r))))))
           {:model m :changed #{} :connections {:upsert [] :remove []} :warnings [] :errors []}
           (sort-by str (users m (:template/id template))))))
+
+;; --- editing one assembly ------------------------------------------------------
+
+(def placement-keys
+  [:part/insert :part/offset :part/rotation :part/start-ext :part/end-ext])
+
+(defn assembly-state
+  "One assembly as the assembly page shows it: mark, role, size, the main
+  member's placement and each end's connection template and overrides."
+  [m xline-id]
+  (when-let [x (get-in m [:xlines xline-id])]
+    (let [main (first (:assembly/parts x))
+          end-state (fn [end]
+                      (when-let [c (some #(when (and (= xline-id (:connection/owner %))
+                                                     (= end (:connection/end %))) %)
+                                         (vals (:connections m)))]
+                        {:connection/template (:connection/template c)
+                         :connection/params (:connection/params c {})}))]
+      {:xline/id xline-id
+       :assembly/mark (:assembly/mark x)
+       :xline/role (:xline/role x)
+       :assembly/template (:assembly/template x)
+       :assembly/size (or (:assembly/size x) (:part/profile main))
+       :main (select-keys main placement-keys)
+       :start (end-state :start)
+       :end (end-state :end)
+       :supports {:start (supporting-xline x :start) :end (supporting-xline x :end)}})))
+
+(defn update-assembly
+  "Apply the assembly page's state to one assembly. Edited by hand, the
+  assembly no longer follows its template (it keeps a note of where it came
+  from), so a later template edit will not overwrite these choices.
+  Same result shape as apply-template."
+  ([m state] (update-assembly m state random-uuid))
+  ([m {id :xline/id :keys [main start end] mark :assembly/mark role :xline/role size :assembly/size}
+    new-id]
+   (let [x (get-in m [:xlines id])
+         inline {:template/kind :assembly :template/id nil
+                 :template/main main :template/start start :template/end end}
+         r (apply-template m id inline size new-id)]
+     (if (:error r)
+       r
+       (update-in r [:model :xlines id]
+                  #(cond-> (assoc % :assembly/template nil
+                                  :assembly/from-template (or (:assembly/template x) (:assembly/from-template x)))
+                     mark (assoc :assembly/mark mark)
+                     role (assoc :xline/role role)))))))
