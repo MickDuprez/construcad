@@ -67,6 +67,14 @@
                     (sort-by (juxt :section/builder (comp - (fnil identity 0) :mass)))
                     vec)}))
 
+(defn assembly-page
+  "The assembly page's data for one assembly of a building (edits/assembly-page),
+  the assembly named by its id as text; nil when either is unknown."
+  [ctx building-id id-text]
+  (when-let [{:keys [model]} (building-model ctx building-id)]
+    (when-let [id (some #(when (= id-text (str %)) %) (keys (:xlines model)))]
+      (edits/assembly-page model id))))
+
 (defn apply-edit!
   "Validate an edit, save what it writes in one transaction, and return the
   upsert patch, or {:error e}. New XLines get their id here, never from the

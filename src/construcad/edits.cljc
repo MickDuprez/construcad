@@ -315,6 +315,22 @@
      :xlines (xline-summary (:xlines m) ids)
      :errors errors}))
 
+(defn assembly-page
+  "What the assembly page needs to edit one assembly: its state
+  (modeller.template/assembly-state) and, for each end that sits on another
+  XLine, that XLine's mark, role and size, so the page can resolve the
+  connection's parameters against the real support. nil for an unknown id."
+  [m id]
+  (when-let [state (template/assembly-state m id)]
+    {:state state
+     :supports (into {} (for [end [:start :end]
+                              :let [sid (get-in state [:supports end])
+                                    x (get-in m [:xlines sid])]
+                              :when x]
+                          [end {:xline/id sid :assembly/mark (:assembly/mark x) :xline/role (:xline/role x)
+                                :size (let [p (:part/profile (first (:assembly/parts x)))]
+                                        (when (string? p) p))}]))}))
+
 (defn patch
   "Upsert patch after an applied plan: instructions for the affected
   assemblies, plus the grid and levels when the edit wrote them."

@@ -223,3 +223,17 @@
                              :start {:node/of c1 :node/end :end} :end {:node/of c2 :node/end :end}})]
         (is (nil? (:error p)))
         (is (= "J1" (:assembly/mark (get-in (:model p) [:xlines (first (:changed p))]))))))))
+
+(deftest assembly-page
+  (let [{m :model} (seeded)
+        b2 (by-mark m "B2")
+        {:keys [state supports]} (edits/assembly-page m b2)]
+    (is (= b2 (:xline/id state)))
+    (is (= "B2" (:assembly/mark state)))
+    (testing "each end names the member it sits on, with its size, for resolving parameters"
+      (is (= #{:start :end} (set (keys supports))))
+      (doseq [end [:start :end]]
+        (is (= (get-in state [:supports end]) (get-in supports [end :xline/id])))
+        (is (= :column (get-in supports [end :xline/role])))
+        (is (string? (get-in supports [end :size])))))
+    (is (nil? (edits/assembly-page m (random-uuid))))))
