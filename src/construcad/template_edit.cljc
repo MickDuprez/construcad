@@ -181,12 +181,15 @@
       {:instructions {} :errors [(:error r)] :warnings [] :model m}
       (regenerated (:model r) {:warnings (:warnings r)}))))
 
+(def ^:private families
+  {:column [#"UC" #"UBP" #"SHS" #"RHS" #"UB"]
+   :beam [#"UB\d" #"PFC" #"UC" #"RHS" #"SHS"]})
+
 (defn sizes-for-role
-  "Designations to offer for a role: universal columns first for a column,
-  everything else first for a beam."
+  "Designations to offer for a role, the role's usual families first
+  (universal beams for a beam, universal columns for a column), each in the
+  order the server sent them."
   [sections role]
-  (let [designation :section/designation
-        column? #(re-find #"UC|SHS" (designation %))]
-    (map designation (if (= :column role)
-                       (concat (filter column? sections) (remove column? sections))
-                       (concat (remove column? sections) (filter column? sections))))))
+  (let [prefs (get families role (:beam families))
+        rank (fn [d] (or (first (keep-indexed #(when (re-find %2 d) %1) prefs)) (count prefs)))]
+    (sort-by rank (map :section/designation sections))))

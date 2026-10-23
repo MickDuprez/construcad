@@ -91,3 +91,8 @@
     (is (= {:value 16 :template-value 12 :override 16 :overridden? true} (dissoc (row :plate-t) :param)))
     (is (false? (:overridden? (row :gap)))))
   (is (nil? (te/end-summary lib templates nil "310UB40.4" "200UC46.2"))))
+
+(deftest size-pickers
+  (let [sections (map #(hash-map :section/designation %) ["200x200x26EA" "460UB82.1" "310UC158" "380PFC" "310UB40.4"])]
+    (is (= ["460UB82.1" "310UB40.4" "380PFC" "310UC158" "200x200x26EA"] (te/sizes-for-role sections :beam)))
+    (is (= "310UC158" (first (te/sizes-for-role sections :column))))))
