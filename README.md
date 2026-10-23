@@ -40,6 +40,47 @@ In the editor:
 - Level elevations, grid axis offsets, grid label styles and a member's
   rotation are edited in the side panel.
 
+## Templates
+
+An **assembly template** is a recipe for an XLine-rooted member: how the main
+member sits on its XLine (which of the nine insertion points, an X/Y offset,
+a rotation, start and end extensions) and a connection template for each end.
+The section size is chosen when the template is applied. A **connection
+template** is an ordered list of actions (`:cut-to-face`, `:end-plate`,
+`:bolt-group`) and parameters; a parameter is a number or a formula over the
+member's section data (`d bf tf tw r1` ...), `support` (the supporting
+member's data, e.g. `(:tf support)`) and the other numeric parameters, e.g.
+`:plate-h "(+ d 20)"`. A new project starts with a small library (square cut,
+end plate with four bolts, and beams and a column built from them).
+
+- The side panel's **Templates** section lists both kinds: **Edit**, **Copy**
+  (saves as a new template), **New assembly**, **New connection**.
+- The **assembly template builder** shows the main member end-on at a
+  preview size (top flange up, across the view is the XLine's local X): click
+  one of the nine points to put it on the XLine (the cross), type the
+  offsets, pick a rotation (0/90/180/270 or typed) and the extensions. Beside
+  it a 3D side elevation shows the member on its XLine between two columns
+  (left drag orbits, right drag pans, wheel zooms). Under it, the **Start**
+  and **End** cards pick the connection template (or none), show its
+  parameters resolved at the preview size, take per-end overrides, and link
+  to the connection template, which opens on top and returns to the builder.
+- The **connection template editor** orders the actions (add, ↑ ↓, remove),
+  edits the parameters (a formula's error shows on its row) and previews a
+  beam of one size running into a column of another.
+- Previews regenerate in the browser with `modeller.core` and the in-browser
+  section library (`construcad.template-edit`), so nothing goes to the server
+  until **Save**, which sends a `:template/save` edit. Every member built from
+  the template regenerates, and the patch reaches every open viewer.
+- To apply one, select members (Shift + click adds or removes), choose the
+  template and the size under **Assembly template**, and **Apply**
+  (`:assembly/apply-template`). The supporting member of each end is read
+  from the end node; an end that isn't on another XLine gets no connection,
+  and the status bar says so. The Selection section shows a member's
+  template (click to edit it) and size.
+
+Holes are cut: the reader realises `:subtract` (and `:union`, `:intersect`)
+with three-bvh-csg; bolts are cylinders.
+
 Every change goes to the server as a source edit (`construcad.edits`); the
 server validates it, saves it in one XTDB transaction, regenerates only the
 affected assemblies and sends the patch back, and to every other open
@@ -52,10 +93,13 @@ viewer over a websocket. The browser never sends geometry.
 | `construcad.seed` | the demo project |
 | `construcad.snap` | snap candidates and the node references they write (pure) |
 | `construcad.store` | XTDB reads and the edit transaction |
-| `construcad.api` | EDN endpoints and the patch websocket |
+| `construcad.template-edit` | template drafts, typed parameters, end-on section view, in-browser preview models (pure) |
+| `construcad.api` | EDN endpoints (buildings, view, templates, edits) and the patch websocket |
 | `construcad.app.reader` | instructions to three.js; `construcad.app.slice` cuts and caps meshes |
 | `construcad.app.viewport` | camera, navigation, view cube, hidden-line display, picking |
-| `construcad.app.main` | panel, XLine tool, grips, typed entry, server round trip |
+| `construcad.app.templates` | template library panel, assembly builder, connection editor |
+| `construcad.app.mini-view` | the small 3D preview view in the template editors |
+| `construcad.app.main` | panel, XLine tool, grips, selection, applying templates, server round trip |
 
 ## Core
 
@@ -72,10 +116,12 @@ viewer over a websocket. The browser never sends geometry.
 | `modeller.shapes` | standard shape builders: rect, I, channel, angle, RHS/SHS, CHS |
 | `modeller.sections-au` | 120 AU hot rolled sections from the ASI 8th edition tables (UB, UC, UBP, PFC, EA, UA), plus placeholder hollow sections |
 | `modeller.instr` | the reader instruction algebra |
-| `modeller.assembly` | parts to instructions, connection actions (`:cut-to-face`) |
+| `modeller.assembly` | parts to instructions, connection actions (`:cut-to-face`, `:end-plate`, `:bolt-group`) |
+| `modeller.params` | template parameters: numbers or SCI formulas over section data |
+| `modeller.template` | assembly templates: apply to an XLine at a size, re-apply where used |
 | `modeller.core` | `regenerate` and `edit` entry points |
 
 ## Tests
 
     clojure -M:test            # JVM: core, edits, snapping
-    npm i && npm run test:cljs # node via shadow-cljs: the same, plus mesh slicing
+    npm i && npm run test:cljs # node via shadow-cljs: the same, plus mesh slicing and booleans
