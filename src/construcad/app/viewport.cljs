@@ -3,9 +3,11 @@
   The camera, view cube and hidden-line handling are ported from
   schemacraft-viewer (core.cljs): Z up, orthographic by default, the left
   button kept for tools, middle/right drag to pan, Shift + middle/right drag
-  to orbit, wheel to zoom at the cursor."
+  to orbit (about the part under the cursor, construcad.app.orbit), wheel to
+  zoom at the cursor."
   (:require ["three" :as THREE]
             ["three/addons/controls/OrbitControls.js" :refer [OrbitControls]]
+            [construcad.app.orbit :as orbit]
             [goog.object :as gobj]))
 
 (defonce vp* (atom nil))
@@ -330,6 +332,7 @@
       (set! (.. controls -mouseButtons -RIGHT) THREE/MOUSE.PAN)
       (.addEventListener controls "start" suppress!)
       (.addEventListener controls "end" resume!)
+      (orbit/install! (.-domElement renderer) camera controls (fn [] model-root))
       (reset! vp* {:el el :renderer renderer :scene scene :camera camera :controls controls
                    :model-root model-root :grid-root grid-root :overlay-root overlay-root
                    :display :hidden-line :show-xlines? true :on-frame on-frame}))

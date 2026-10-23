@@ -1,9 +1,10 @@
 (ns construcad.app.mini-view
   "A small shaded three.js view for the template editors' previews: left drag
-  orbits, right or middle drag pans, the wheel zooms. Z up, orthographic, as
+  orbits (about the part under the cursor), right or middle drag pans, the wheel zooms. Z up, orthographic, as
   the main viewport."
   (:require ["three" :as THREE]
             ["three/addons/controls/OrbitControls.js" :refer [OrbitControls]]
+            [construcad.app.orbit :as orbit]
             [construcad.app.reader :as reader]
             [goog.object :as gobj]))
 
@@ -103,6 +104,7 @@
     (set! (.. controls -mouseButtons -RIGHT) THREE/MOUSE.PAN)
     (.addEventListener (.-domElement renderer) "contextmenu" #(.preventDefault %))
     (.addEventListener controls "start" #(swap! view assoc :moved? true))
+    (orbit/install! (.-domElement renderer) camera controls (fn [] root))
     (.append el (.-domElement renderer))
     (let [resize! (fn []
                     (let [[w h] (size el)
