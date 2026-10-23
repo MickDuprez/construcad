@@ -60,16 +60,20 @@ end plate with four bolts, and beams and a column built from them).
 - The side panel's **Templates** section lists both kinds: **Edit**, **Copy**
   (saves as a new template), **New assembly**, **New connection**.
 - The **assembly page** edits an assembly template. It shows the main
-  member on its XLine and nothing else: end-on at a preview size (top flange
+  member on its XLine and nothing else. Its one **Assembly** view, in 3D,
+  shows the member and its own parts (plates, bolts, holes, end cuts) as
+  its connections make them, and its XLine as a thin line with a ball at
+  each node, so offsets and extensions show against it. It lays the XLine
+  along the view whichever way the member runs and opens side-on (looking
+  at the web, start on the left); drag to orbit, pan and zoom, and **Iso**,
+  **Plan**, **Side** and **End** snap back. An end with a connection is
+  made against a sample column (the connection editor's default support),
+  which is not drawn. The **Start** card sits left of the view and the
+  **End** card right, like the member's ends (stacked on a narrow window).
+  Below the view the member is shown end-on at a preview size (top flange
   up, across the view is the XLine's local X), where you click one of the
   nine points to put it on the XLine (the cross), type the offsets, pick a
-  rotation (0/90/180/270 or typed) and the extensions, beside a side
-  elevation of the member alone. Below them a **3D preview** shows the
-  member and its own parts (plates, bolts, holes, end cuts) as its
-  connections make them, and its XLine as a thin line with a ball at each
-  node, so offsets and extensions show against it. An end with a connection
-  is made against a sample column (the connection editor's default
-  support), which is not drawn. The **Start** and **End** cards pick a
+  rotation (0/90/180/270 or typed) and the extensions. The two cards pick a
   connection template (or none) and take per-end overrides of its
   parameters, with a link to the connection editor, which opens on top and
   returns to the page. A card can't know what its end will sit on, so a
@@ -98,10 +102,11 @@ end plate with four bolts, and beams and a column built from them).
   runs `modeller.template/assembly-state`). It adds the mark, role and size,
   the XLine's ends, length and rotation, says which template the member came
   from, and each card says what that end sits on and resolves the parameters
-  against it. Its 3D preview is the member as Save would make it,
+  against it. Its Assembly view is the member as Save would make it,
   regenerated in the browser against what its ends really sit on (the page
   data carries that context: the XLine, the XLines its nodes hang off, the
-  grid and levels, its connections), still drawn alone.
+  grid and levels, its connections, and the connections other members bolt
+  into it, which drill its holes), still drawn alone.
   **Save** sends `:assembly/update` (and `:xline/set-rotation`
   if that changed); a hand-edited assembly detaches from its template
   (template edits no longer change it; it remembers where it came from).
@@ -122,12 +127,12 @@ viewer over a websocket. The browser never sends geometry.
 | `construcad.seed` | the demo project |
 | `construcad.snap` | snap candidates and the node references they write (pure) |
 | `construcad.store` | XTDB reads and the edit transaction |
-| `construcad.template-edit` | template drafts, typed parameters, end-on and side views of the member, in-browser preview models, assembly page edits (pure) |
+| `construcad.template-edit` | template drafts, typed parameters, the end-on view and member-space of the member, in-browser preview models, assembly page edits (pure) |
 | `construcad.api` | EDN endpoints (buildings, view, templates, one assembly, edits) and the patch websocket |
 | `construcad.app.reader` | instructions to three.js; `construcad.app.slice` cuts and caps meshes |
 | `construcad.app.viewport` | camera, navigation, view cube, hidden-line display, picking |
 | `construcad.app.templates` | template library panel, assembly page (templates and single assemblies), connection editor |
-| `construcad.app.mini-view` | the small 3D preview view in the template editors |
+| `construcad.app.mini-view` | the small 3D views in the template editors (the assembly page's Assembly view, the connection preview) |
 | `construcad.app.main` | panel, XLine tool, grips, selection, context menu, applying templates, server round trip |
 
 ## Core

@@ -77,10 +77,23 @@ button.small, .buttons.small button { padding: 2px 7px; font-size: 12px; }
 .dialog-body { flex: 1; overflow: auto; padding: 4px 14px 14px; }
 .dialog-body.two-col { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(380px, 1.1fr); gap: 18px; }
 .dialog-body.two-col .col { display: flex; flex-direction: column; min-height: 0; }
-.dialog-body.assembly { display: grid; grid-template-columns: 300px 260px 1fr; grid-template-areas: "main place elev" "view view view" "ends ends ends" "msgs msgs msgs"; gap: 4px 18px; }
-.dialog-body.assembly .main-member { grid-area: main; }
-.dialog-body.assembly .elevation { grid-area: elev; display: flex; flex-direction: column; }
-.dialog-body.assembly .ends { grid-area: ends; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+/* assembly page: the Start and End cards either side of the view, like the
+   member's ends; the end-on section and placement under the view */
+.dialog-body.assembly { display: grid; grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(250px, 300px);
+  grid-template-areas: "start view end" "start setup end" "msgs msgs msgs"; grid-template-rows: auto 1fr auto;
+  gap: 4px 16px; align-items: start; }
+.dialog-body.assembly .end-card.start { grid-area: start; }
+.dialog-body.assembly .end-card.end { grid-area: end; }
+.dialog-body.assembly .member-setup { grid-area: setup; display: flex; flex-wrap: wrap; gap: 0 18px; }
+.dialog-body.assembly .member-setup .main-member { flex: 0 1 300px; min-width: 240px; }
+.dialog-body.assembly .member-setup .placement-col { flex: 1 1 240px; }
+@media (max-width: 1100px) {
+  .dialog-body.assembly { grid-template-columns: 1fr 1fr; grid-template-areas: "view view" "start end" "setup setup" "msgs msgs";
+    grid-template-rows: none; }
+}
+@media (max-width: 700px) {
+  .dialog-body.assembly { grid-template-columns: minmax(0, 1fr); grid-template-areas: "view" "start" "end" "setup" "msgs"; }
+}
 .mini-view { position: relative; flex: 1; min-height: 340px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .mini-view canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
 
@@ -95,7 +108,7 @@ svg.end-on .dim { font-size: 0; }
 .placement th { text-align: left; color: var(--muted); font-weight: 600; padding: 3px 6px 3px 0; white-space: nowrap; }
 .placement td { padding: 2px 0; }
 
-.end-card { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px 10px; }
+.end-card { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px 10px; min-width: 0; }
 .end-card h3 { margin-top: 10px; }
 table.params { width: 100%; border-collapse: collapse; margin-top: 6px; }
 table.params th { text-align: left; color: var(--muted); font-weight: 600; padding: 3px 4px; border-bottom: 1px solid var(--line); }
@@ -112,15 +125,9 @@ ol.actions li { margin: 4px 0; padding: 4px 6px; border: 1px solid var(--line); 
 code { font: 12px ui-monospace, monospace; background: #eef2f4; padding: 0 3px; border-radius: 3px; }
 
 /* assembly page */
-.dialog-body.assembly .placement-col { grid-area: place; }
 .dialog-body.assembly .messages { grid-area: msgs; }
-.dialog-body.assembly .member-preview { grid-area: view; display: flex; flex-direction: column; }
-.dialog-body.assembly .member-preview .mini-view { min-height: 300px; }
-svg.side-view { width: 100%; height: 300px; background: #f7fafb; border: 1px solid var(--line); border-radius: 4px; }
-svg.side-view .member { fill: #c3ccd3; stroke: #1f2a33; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
-svg.side-view .edge { stroke: #1f2a33; stroke-width: .6; vector-effect: non-scaling-stroke; }
-svg.side-view .xline { stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; stroke-dasharray: 8 4; }
-svg.side-view .node { fill: var(--accent); }
+.dialog-body.assembly .assembly-view { grid-area: view; display: flex; flex-direction: column; min-width: 0; }
+.dialog-body.assembly .assembly-view .mini-view { flex: none; height: 380px; min-height: 0; }
 .dialog header input.mark { width: 90px; }
 .instance-info { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: #f7fafb; }
 .apply-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--accent-soft); }

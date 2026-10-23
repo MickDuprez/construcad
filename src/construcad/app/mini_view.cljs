@@ -48,7 +48,7 @@
                                  (max (js/Math.abs (.-y p)) (/ (js/Math.abs (.-x p)) a)))))]
       (set-frustum! view (* 1.12 half)))
     (.update controls)
-    (swap! view assoc :dir dir)))
+    (swap! view assoc :dir dir :moved? false)))
 
 (defn- node-marker
   "A small ball at an XLine node, drawn through the solids like the XLine."
@@ -101,14 +101,17 @@
     (set! (.. controls -mouseButtons -MIDDLE) THREE/MOUSE.PAN)
     (set! (.. controls -mouseButtons -RIGHT) THREE/MOUSE.PAN)
     (.addEventListener (.-domElement renderer) "contextmenu" #(.preventDefault %))
+    (.addEventListener controls "start" #(swap! view assoc :moved? true))
     (.append el (.-domElement renderer))
     (let [resize! (fn []
                     (let [[w h] (size el)
                           laid-out? (and (> w 1) (> h 1))]
                       (.setSize renderer w h false)
                       (set-frustum! view (.-top camera))
-                      ;; shown before the canvas had a size: fit again now it has one
-                      (when (and laid-out? (:shown? @view) (not (:fitted? @view)))
+                      ;; shown before the canvas had a size, or resized before
+                      ;; the user moved the camera: fit again
+                      (when (and laid-out? (:shown? @view)
+                                 (or (not (:fitted? @view)) (not (:moved? @view))))
                         (look! view (:dir @view)))
                       (when laid-out? (swap! view assoc :fitted? (boolean (:shown? @view))))))
           observer (js/ResizeObserver. resize!)]

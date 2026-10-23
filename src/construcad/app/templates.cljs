@@ -2,10 +2,11 @@
   "The template library panel and the editors, shown as a dialog over the
   editor:
 
-  - the assembly page: the main member on its XLine, end-on with its nine
-    insertion points, offset, rotation and extensions, a side elevation of
-    the member alone, and a Start and an End card that pick a connection
-    template (or none) with per-end overrides. It edits an assembly template,
+  - the assembly page: one 3D view of the member alone on its XLine, opening
+    side-on (start on the left), between a Start and an End card that pick a
+    connection template (or none) with per-end overrides; below it the
+    member end-on with its nine insertion points, offset, rotation and
+    extensions. It edits an assembly template,
     or (instance mode) one assembly in the model, read from the server with
     modeller.template/assembly-state, with its mark, role and size; Save
     sends :assembly/update and Apply template... re-applies a template;
@@ -341,34 +342,14 @@
             (str (fmt b) " × " (fmt d)))))
     (h :p {:class "warn"} (if (map? size) "A custom section: no end-on view." (str "Unknown section " size)))))
 
-(defn- side-view
-  "SVG side elevation of the member alone on its XLine (start on the left):
-  the XLine and its two nodes, the member with its extensions, and the
-  section's flange faces as lines along it."
-  [size main length]
-  (when-let [{[l0 l1] :xline [z0 z1] :member [y0 y1] :y edges :edges} (te/side-elevation @lib size main length)]
-    (let [x0 (min l0 z0) x1 (max l1 z1)
-          ylo (min y0 0) yhi (max y1 0)
-          pad (* 0.06 (- x1 x0))
-          w (+ (- x1 x0) (* 2 pad))
-          hgt (max (+ (- yhi ylo) (* 2 pad)) (* 0.18 w))
-          cy (/ (+ ylo yhi) 2)
-          r (* 0.008 w)]
-      (s :svg {:viewBox (str/join " " [(- x0 pad) (- (- cy) (/ hgt 2)) w hgt]) :class "side-view"}
-         (s :rect {:x z0 :y (- y1) :width (- z1 z0) :height (- y1 y0) :class "member"})
-         (for [y edges] (s :line {:x1 z0 :y1 (- y) :x2 z1 :y2 (- y) :class "edge"}))
-         (s :line {:x1 l0 :y1 0 :x2 l1 :y2 0 :class "xline"})
-         (for [[x label] [[l0 "start"] [l1 "end"]]]
-           (s :circle {:cx x :cy 0 :r r :class "node"} (s :title {} (str label " node"))))))))
-
 (defn- main-member-section
-  "The main member on its XLine: end-on view, placement and side elevation."
-  [{:keys [kind draft] :as dlg} size length size-control]
+  "The main member on its XLine: end-on view and placement."
+  [{:keys [kind draft]} size size-control]
   (let [k (:main (paths kind))
         main (merge te/default-main (get draft k))
         set-main! (fn [mk v] (update-draft! assoc-in [k mk] v))
         [ox oy] (:part/offset main [0 0])]
-    (list
+    (h :div {:class "member-setup"}
      (h :section {:class "main-member"}
         (h :h3 {} "Main member, end-on")
         size-control
@@ -389,13 +370,7 @@
                  (num-field "rot" (:part/rotation main) #(set-main! :part/rotation (or % 0)))))
            (h :tr {} (h :th {} "Start extension") (h :td {} (num-field "sx" (:part/start-ext main) #(set-main! :part/start-ext (or % 0)))))
            (h :tr {} (h :th {} "End extension") (h :td {} (num-field "ex" (:part/end-ext main) #(set-main! :part/end-ext (or % 0))))))
-        (h :p {:class "muted small"} "An extension lengthens the member past its node; a negative one sets it back."))
-     (h :section {:class "elevation"}
-        (h :h3 {} "Side elevation")
-        (side-view size main length)
-        (h :p {:class "muted small"}
-           (str "The member alone on " (if (= :instance kind) "its" "a") " " (fmt length)
-                " mm XLine, start on the left. What it meets at each end is the connection's business."))))))
+        (h :p {:class "muted small"} "An extension lengthens the member past its node; a negative one sets it back.")))))
 
 (defn- end-card
   "One end: the connection template (or none), its parameters for this
@@ -412,7 +387,7 @@
         error-of (into {} (map (juxt :param identity)) (:errors summary))
         options (cons ["" "None (plain end)"]
                       (map (fn [t] [(str (:template/id t)) (:template/name t)]) (templates-of :connection)))]
-    (h :div {:class "end-card"}
+    (h :div {:class (str "end-card " (name end))}
        (h :h3 {} (if (= :start end) "Start" "End"))
        (when instance?
          (h :p {:class "muted small"}
@@ -456,24 +431,26 @@
 (defn- regen-messages [errors]
   (messages (map regen-error-text (remove :param errors))))
 
-(defn- member-preview
-  "The 3D preview of the member alone: main part, plates, bolts, holes and
-  cuts as its connections made them, its XLine as a thin line with a ball at
-  each node. Nothing it connects to is drawn."
-  [{:keys [instructions nodes]} note & {:keys [length]}]
-  (let [views (te/preview-views nodes)
-        host (preview-host! (second (first views)))
+(defn- assembly-view
+  "The page's one view of the member alone, in member-space: main part,
+  plates, bolts, holes and cuts as its connections made them, its XLine as a
+  thin line with a ball at each node. It opens side-on (the web, start on
+  the left) and orbits, pans and zooms; the buttons snap back. Nothing it
+  connects to is drawn."
+  [preview note & {:keys [length]}]
+  (let [{:keys [instructions nodes]} (te/in-member-space preview)
+        views (te/preview-views nodes)
+        host (preview-host! (some #(when (= "Side" (first %)) (second %)) views))
         refit? (and length (not= length (get-in @ui* [:preview :length])))]
     ;; a new sample length moves the end node: frame the member again
     (when refit? (swap! ui* assoc-in [:preview :length] length))
     (show-preview! instructions :nodes nodes :fit? refit?)
-    (h :section {:class "member-preview"}
+    (h :section {:class "assembly-view"}
        (h :div {:class "row"}
-          (h :h3 {} "3D preview")
-          (h :span {:class "grow"})
+          (h :h3 {:class "grow"} "Assembly")
           (view-buttons views))
        host
-       (h :p {:class "muted small"} note))))
+       (h :p {:class "muted small"} note " Left drag orbits, right drag pans, the wheel zooms."))))
 
 (defn- assembly-builder [{:keys [draft size error saving?] :as dlg}]
   (let [length (te/preview-length @lib (:templates @env*) draft size (:support-size dlg))
@@ -493,19 +470,18 @@
           (h :button {:class "on" :disabled saving? :on-click save!} "Save"))
        (when error (h :div {:class "dialog-error"} error))
        (h :div {:class "dialog-body assembly"}
-          (main-member-section dlg size length
+          (end-card :start dlg size)
+          (assembly-view preview
+                         (str "The member alone, on a " (fmt length) " mm sample XLine (the thin line, a ball at each node), "
+                              "just long enough to keep its two end details apart. "
+                              "An end with a connection is made against a " (:support-size dlg)
+                              " column, as in the connection editor, which isn't drawn.")
+                         :length length)
+          (end-card :end dlg size)
+          (main-member-section dlg size
                                (h :div {:class "row"} "Preview size "
                                   (size-select "size" size #(update-top! assoc :size %)
                                                (sizes-for (:template/role draft)))))
-          (member-preview preview
-                          (str "The member alone, on a " (fmt length) " mm sample XLine (the thin line, a ball at each node), "
-                               "just long enough to keep its two end details apart. "
-                               "An end with a connection is made against a " (:support-size dlg)
-                               " column, as in the connection editor, which isn't drawn.")
-                          :length length)
-          (h :div {:class "ends"}
-             (end-card :start dlg size)
-             (end-card :end dlg size))
           (h :div {:class "messages"} (regen-messages errors))))))
 
 (defn- template-note [{:assembly/keys [template from-template]}]
@@ -560,19 +536,18 @@
           (h :label {} (h :span {:class "muted"} "XLine rotation ")
              (num-field "xrot" rotation #(update-top! assoc :rotation (or % 0)))))
        (h :div {:class "dialog-body assembly"}
-          (main-member-section dlg size (:length info)
+          (end-card :start dlg size)
+          (assembly-view (or preview {:instructions {} :nodes []})
+                         (str "This assembly alone, as Save would make it, on its " (fmt (:length info))
+                              " mm XLine (the thin line, a ball at each node), laid along the view whichever way it runs. "
+                              "What its ends sit on isn't drawn."))
+          (end-card :end dlg size)
+          (main-member-section dlg size
                                (h :div {:class "row"} "Size "
                                   (if (map? size)
                                     (h :span {:class "muted"} "custom section")
                                     (size-select "size" size #(update-draft! assoc :assembly/size %)
                                                  (sizes-for role)))))
-          (when preview
-            (member-preview preview
-                            (str "This assembly alone, as Save would make it, on its XLine (the thin line, a ball at each node). "
-                                 "What its ends sit on isn't drawn.")))
-          (h :div {:class "ends"}
-             (end-card :start dlg size)
-             (end-card :end dlg size))
           (h :div {:class "messages"} (regen-messages (:errors preview)))))))
 
 ;; --- dialog and library panel -----------------------------------------------------------

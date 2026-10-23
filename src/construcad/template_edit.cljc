@@ -10,14 +10,16 @@
   top centre, as beams in the demo bay do. The assembly page shows its
   member alone, with whatever its connections did to it: a template's ends
   sit on sample columns, an assembly's on what they really sit on, but
-  neither support is drawn."
+  neither support is drawn. The page shows it in member-space, its XLine
+  lying along X."
   (:require [clojure.string :as str]
             [modeller.assembly :as assembly]
             [modeller.core :as core]
             [modeller.frame :as frame]
             [modeller.params :as params]
             [modeller.profile :as profile]
-            [modeller.template :as template]))
+            [modeller.template :as template]
+            [modeller.vec :as v]))
 
 ;; --- drafts ------------------------------------------------------------------------
 
@@ -135,26 +137,6 @@
        :points (into {} (for [[k [fx fy]] profile/insertion-points]
                           [k (->xy [(* fx (:b outline)) (* fy (:d outline))])]))
        :b (:b outline) :d (:d outline)})))
-
-(defn- round1 [x] (/ (Math/round (* 10.0 x)) 10.0))
-
-(defn side-elevation
-  "The main member seen from the side on an XLine of `length`, start on the
-  left: distance along the XLine from the start node across, the XLine's
-  local Y up. {:xline [0 length] :member [z0 z1] :y [y0 y1] :edges [y ...]},
-  edges being the heights of the section's horizontal faces (flanges). nil
-  for an unknown size."
-  [lib size main length]
-  (when-let [{:keys [loops]} (section-view lib size main)]
-    (let [main (merge default-main main)
-          ys (map second (apply concat loops))
-          flat (fn [loop] (for [[[x0 y0] [x1 y1]] (map vector loop (concat (rest loop) [(first loop)]))
-                                :when (and (< (abs (- y1 y0)) 1e-6) (> (abs (- x1 x0)) 1))]
-                            (round1 y0)))]
-      {:xline [0 length]
-       :member [(- (:part/start-ext main)) (+ length (:part/end-ext main))]
-       :y [(round1 (apply min ys)) (round1 (apply max ys))]
-       :edges (vec (sort (distinct (mapcat flat loops))))})))
 
 ;; --- preview models ------------------------------------------------------------------
 
@@ -341,6 +323,23 @@
     (if (:error r)
       {:instructions {} :nodes [] :errors [(:error r)] :model m}
       (member-only (:model r) id))))
+
+(def member-space
+  "Where the assembly page shows a member: its XLine along +X from the
+  origin, the XLine's local Y up (+Z) and its local X towards +Y, so the
+  side view looks at the web, start on the left, whichever way the member
+  runs in the model."
+  {:o [0 0 0] :x [0 1 0] :y [0 0 1] :z [1 0 0]})
+
+(defn in-member-space
+  "A member-only preview (instructions and its XLine's two nodes) moved
+  into member-space."
+  [{:keys [instructions nodes] :as preview}]
+  (let [[start end] nodes
+        length (if end (v/magnitude (v/v- end start)) 0)]
+    (assoc preview
+           :instructions (update-vals instructions #(assoc % :frame member-space))
+           :nodes (if end [[0 0 0] [length 0 0]] []))))
 
 (defn preview-views
   "Named view directions (eye side) for the member preview, square to its

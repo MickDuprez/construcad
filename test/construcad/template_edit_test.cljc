@@ -3,6 +3,7 @@
             [construcad.seed :as seed]
             [construcad.template-edit :as te]
             [modeller.assembly :as assembly]
+            [modeller.frame :as frame]
             [modeller.instr :as instr]
             [modeller.library :as library]
             [modeller.sections-au :as au]
@@ -181,18 +182,25 @@
           (is (empty? errors))
           (is (not-any? :needs-support? rows)))))))
 
-(deftest side-elevations
-  (let [{:keys [xline member y edges]} (te/side-elevation lib "310UB40.4" {:part/insert :top-centre
-                                                                         :part/start-ext 50 :part/end-ext -20}
-                                                          3000)]
-    (is (= [0 3000] xline))
-    (is (= [-50 2980] member))
-    (is (= [-304.0 0.0] y))
-    (testing "the flange faces show as lines along the member"
-      (is (= [-304.0 -293.8 -10.2 0.0] edges))))
-  (testing "rolled 90 degrees the member is as deep as its flange is wide"
-    (is (= [-82.5 82.5] (:y (te/side-elevation lib "310UB40.4" {:part/insert :top-centre :part/rotation 90} 3000)))))
-  (is (nil? (te/side-elevation lib "nope" {} 3000))))
+(deftest member-space-previews
+  (is (frame/valid? te/member-space))
+  (testing "the member lies along X, its local Y up, so Side looks at the web from its local -X"
+    (is (= [0 0 1] (frame/dir->parent te/member-space [0 1 0])))
+    (is (= [0 -1 0] (frame/dir->parent te/member-space [-1 0 0])))
+    (is (v/nearly= [0 -1 0] (some #(when (= "Side" (first %)) (second %))
+                                  (te/preview-views (:nodes (te/in-member-space {:instructions {} :nodes [[0 0 0] [10 0 0]]}))))
+                   1e-9)))
+  (let [preview (te/assembly-preview lib templates (:beam-plates templates) {:size "250UB31.4"})
+        moved (te/in-member-space preview)
+        member (get-in moved [:instructions :member])]
+    (testing "only the outer frame changes: the parts stay in the XLine's own space"
+      (is (= te/member-space (:frame member)))
+      (is (= (get-in preview [:instructions :member :child]) (:child member))))
+    (testing "the nodes go to the origin and along X"
+      (is (= [[0.0 0.0 0.0] [(double (get-in preview [:nodes 1 0])) 0.0 0.0]] (mapv #(mapv double %) (:nodes moved))))))
+  (testing "a vertical XLine lies down too"
+    (is (= [[0.0 0.0 0.0] [4200.0 0.0 0.0]] (mapv #(mapv double %) (:nodes (te/in-member-space {:instructions {} :nodes [[5 5 0] [5 5 4200]]}))))))
+  (is (= [] (:nodes (te/in-member-space {:instructions {} :nodes []})))))
 
 (deftest framing-into-a-beam
   (let [{:keys [instructions errors]} (te/connection-preview lib templates (:end-plate templates)
