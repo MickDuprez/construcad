@@ -58,7 +58,7 @@
 (deftest connection-previews
   (let [{:keys [instructions errors]} (te/connection-preview lib templates (:end-plate templates)
                                                              {:size "310UB40.4" :support-size "200UC46.2"})
-        beam (:beam instructions)]
+        beam (:owner instructions)]
     (is (empty? errors))
     (is (= :subtract (:op (part beam :plate-end))))
     (is (= 4 (get-in (part beam :bolts-end) [:part/size :count]))))
@@ -69,13 +69,14 @@
       (is (= [:plate-h] (map :param (:errors (te/resolve-for lib draft {} "310UB40.4" "200UC46.2"))))))))
 
 (deftest assembly-previews
-  (let [{:keys [instructions errors warnings]}
-        (te/assembly-preview lib templates (:beam-plates templates) {:size "250UB31.4" :support-size "200UC46.2"})
-        member (:member instructions)]
-    (is (empty? errors))
-    (is (empty? warnings))
-    (is (part member :plate-start))
-    (is (part member :plate-end)))
+  (testing "the member alone: nothing at its ends, so no connection parts"
+    (let [{:keys [instructions errors]}
+          (te/assembly-preview lib templates (:beam-plates templates) {:size "250UB31.4"})
+          member (:member instructions)]
+      (is (empty? errors))
+      (is (part member :main))
+      (is (nil? (part member :plate-start)))
+      (is (nil? (part member :plate-end)))))
   (testing "a column template stands alone"
     (let [{:keys [instructions errors]} (te/assembly-preview lib templates (:column templates) {:size "200UC46.2"})]
       (is (empty? errors))
@@ -88,11 +89,60 @@
     (is (= "End plate, 4 bolts" (:template/name template)))
     (is (empty? errors))
     (is (= 324.0 (:value (row :plate-h))))
-    (is (= {:value 16 :template-value 12 :override 16 :overridden? true} (dissoc (row :plate-t) :param)))
+    (is (= {:value 16 :template-value 12 :override 16 :overridden? true :needs-support? false} (dissoc (row :plate-t) :param)))
     (is (false? (:overridden? (row :gap)))))
   (is (nil? (te/end-summary lib templates nil "310UB40.4" "200UC46.2"))))
 
 (deftest size-pickers
   (let [sections (map #(hash-map :section/designation %) ["200x200x26EA" "460UB82.1" "310UC158" "380PFC" "310UB40.4"])]
     (is (= ["460UB82.1" "310UB40.4" "380PFC" "310UC158" "200x200x26EA"] (te/sizes-for-role sections :beam)))
-    (is (= "310UC158" (first (te/sizes-for-role sections :column))))))
+    (is (= "310UC158" (first (te/sizes-for-role sections :column))))
+    (is (= "200x200x26EA" (first (te/sizes-for-role sections :brace))))
+    (is (= "460UB82.1" (first (te/sizes-for-role sections :joist))))))
+
+(deftest support-free-end-conditions
+  (testing "an assembly template's card resolves without a support: support formulas wait for one"
+    (let [t (assoc-in (:end-plate templates) [:template/params :plate-dy] "(:tf support)")
+          {:keys [rows errors]} (te/end-summary lib (assoc templates :end-plate t)
+                                                {:connection/template :end-plate} "310UB40.4" nil)
+          row (fn [k] (some #(when (= k (:param %)) %) rows))]
+      (is (empty? errors))
+      (is (:needs-support? (row :plate-dy)))
+      (is (not (:needs-support? (row :plate-h))))
+      (is (= 324.0 (:value (row :plate-h))))
+      (testing "with a support it resolves"
+        (let [{:keys [rows errors]} (te/end-summary lib (assoc templates :end-plate t)
+                                                    {:connection/template :end-plate} "310UB40.4" "200UC46.2")]
+          (is (empty? errors))
+          (is (not-any? :needs-support? rows)))))))
+
+(deftest side-elevations
+  (let [{:keys [xline member y edges]} (te/side-elevation lib "310UB40.4" {:part/insert :top-centre
+                                                                         :part/start-ext 50 :part/end-ext -20}
+                                                          3000)]
+    (is (= [0 3000] xline))
+    (is (= [-50 2980] member))
+    (is (= [-304.0 0.0] y))
+    (testing "the flange faces show as lines along the member"
+      (is (= [-304.0 -293.8 -10.2 0.0] edges))))
+  (testing "rolled 90 degrees the member is as deep as its flange is wide"
+    (is (= [-82.5 82.5] (:y (te/side-elevation lib "310UB40.4" {:part/insert :top-centre :part/rotation 90} 3000)))))
+  (is (nil? (te/side-elevation lib "nope" {} 3000))))
+
+(deftest framing-into-a-beam
+  (let [{:keys [instructions errors]} (te/connection-preview lib templates (:end-plate templates)
+                                                             {:size "250UB31.4" :support-size "460UB82.1"
+                                                              :arrangement :beam})
+        owner (:owner instructions)]
+    (is (empty? errors))
+    (is (= #{:owner :support} (set (keys instructions))))
+    (is (part owner :plate-end))
+    (is (= 4 (get-in (part owner :bolts-end) [:part/size :count])))))
+
+(deftest saving-the-assembly-page
+  (let [state {:xline/id :b1 :assembly/size "310UB40.4" :main {:part/insert :centre}}]
+    (is (= [{:edit/type :assembly/update
+             :state (assoc state :main (assoc te/default-main :part/insert :centre))}]
+           (te/save-edits state {:rotation 0 :rotation-was 0})))
+    (is (= [{:edit/type :xline/set-rotation :xline/id :b1 :rotation 90} :assembly/update]
+           (update (te/save-edits state {:rotation 90 :rotation-was 0}) 1 :edit/type)))))

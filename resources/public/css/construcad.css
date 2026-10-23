@@ -77,9 +77,9 @@ button.small, .buttons.small button { padding: 2px 7px; font-size: 12px; }
 .dialog-body { flex: 1; overflow: auto; padding: 4px 14px 14px; }
 .dialog-body.two-col { display: grid; grid-template-columns: minmax(380px, 1fr) minmax(380px, 1.1fr); gap: 18px; }
 .dialog-body.two-col .col { display: flex; flex-direction: column; min-height: 0; }
-.dialog-body.assembly { display: grid; grid-template-columns: 340px 1fr; grid-template-areas: "main elev" "ends ends"; gap: 4px 18px; }
+.dialog-body.assembly { display: grid; grid-template-columns: 300px 260px 1fr; grid-template-areas: "main place elev" "ends ends ends" "msgs msgs msgs"; gap: 4px 18px; }
 .dialog-body.assembly .main-member { grid-area: main; }
-.dialog-body.assembly .elevation { grid-area: elev; display: flex; flex-direction: column; min-height: 420px; }
+.dialog-body.assembly .elevation { grid-area: elev; display: flex; flex-direction: column; }
 .dialog-body.assembly .ends { grid-area: ends; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .mini-view { position: relative; flex: 1; min-height: 340px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .mini-view canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
@@ -110,3 +110,18 @@ ol.actions { margin: 0; padding-left: 20px; }
 ol.actions li { margin: 4px 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
 .action-head { display: flex; align-items: center; gap: 6px; }
 code { font: 12px ui-monospace, monospace; background: #eef2f4; padding: 0 3px; border-radius: 3px; }
+
+/* assembly page */
+.dialog-body.assembly .placement-col { grid-area: place; }
+.dialog-body.assembly .messages { grid-area: msgs; }
+svg.side-view { width: 100%; height: 300px; background: #f7fafb; border: 1px solid var(--line); border-radius: 4px; }
+svg.side-view .member { fill: #c3ccd3; stroke: #1f2a33; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+svg.side-view .edge { stroke: #1f2a33; stroke-width: .6; vector-effect: non-scaling-stroke; }
+svg.side-view .xline { stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; stroke-dasharray: 8 4; }
+svg.side-view .node { fill: var(--accent); }
+.dialog header input.mark { width: 90px; }
+.instance-info { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: #f7fafb; }
+.apply-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--accent-soft); }
+.context-menu { position: fixed; z-index: 30; min-width: 150px; display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  background: var(--panel); border: 1px solid #b8c4cc; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.2); }
+.context-menu button { text-align: left; }

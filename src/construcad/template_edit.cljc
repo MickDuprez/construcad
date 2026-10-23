@@ -3,9 +3,13 @@
   preview models the browser regenerates with the real core (modeller.core),
   so a draft template previews without a round trip to the server.
 
-  Preview bay: columns are vertical XLines of 3 m, rolled 90 degrees so a beam
-  along +X meets a flange face; the beam hangs off the column tops (top
-  centre on the node), as beams in the demo bay do."
+  The connection preview frames an owner of one size into a support of
+  another, arranged as a vertical column (an XLine of 3 m, rolled 90 degrees
+  so the owner meets a flange face) or as a horizontal beam the owner frames
+  into at 90 degrees (a joist into a beam). Both hang off their XLines by the
+  top centre, as beams in the demo bay do. An assembly template is shown on
+  its member alone: a connection template knows nothing of member roles,
+  only the two ECSs it joins."
   (:require [clojure.string :as str]
             [modeller.assembly :as assembly]
             [modeller.core :as core]
@@ -94,19 +98,26 @@
                          (section-data lib size)
                          (section-data lib support-size)))
 
+(defn- uses-support? [v] (and (string? v) (boolean (re-find #"\bsupport\b" v))))
+
 (defn end-summary
-  "What an assembly template's end condition does at the preview sizes:
-  the connection template, its resolved parameters (template order, overrides
-  marked) and any formula errors. nil when the end has no connection."
+  "What an end condition does for an owner of `size`: the connection
+  template, its resolved parameters (template order, overrides marked) and
+  any formula errors. nil when the end has no connection. With no
+  `support-size` (an assembly template can't know what its ends will sit on)
+  a formula over `support` is marked :needs-support? instead of failing."
   [lib templates condition size support-size]
   (when-let [t (get templates (:connection/template condition))]
     (let [overrides (:connection/params condition {})
-          {:keys [params errors]} (resolve-for lib t overrides size support-size)]
+          {:keys [params errors]} (resolve-for lib t overrides size support-size)
+          waits? (fn [k] (and (nil? support-size)
+                              (uses-support? (get overrides k (get-in t [:template/params k])))))]
       {:template t
        :rows (for [k (distinct (concat (keys (:template/params t)) (keys overrides)))]
                {:param k :value (get params k) :template-value (get-in t [:template/params k])
-                :override (get overrides k) :overridden? (contains? overrides k)})
-       :errors errors})))
+                :override (get overrides k) :overridden? (contains? overrides k)
+                :needs-support? (waits? k)})
+       :errors (remove (comp waits? :param) errors)})))
 
 ;; --- end-on view of the main member -------------------------------------------------
 
@@ -123,6 +134,26 @@
        :points (into {} (for [[k [fx fy]] profile/insertion-points]
                           [k (->xy [(* fx (:b outline)) (* fy (:d outline))])]))
        :b (:b outline) :d (:d outline)})))
+
+(defn- round1 [x] (/ (Math/round (* 10.0 x)) 10.0))
+
+(defn side-elevation
+  "The main member seen from the side on an XLine of `length`, start on the
+  left: distance along the XLine from the start node across, the XLine's
+  local Y up. {:xline [0 length] :member [z0 z1] :y [y0 y1] :edges [y ...]},
+  edges being the heights of the section's horizontal faces (flanges). nil
+  for an unknown size."
+  [lib size main length]
+  (when-let [{:keys [loops]} (section-view lib size main)]
+    (let [main (merge default-main main)
+          ys (map second (apply concat loops))
+          flat (fn [loop] (for [[[x0 y0] [x1 y1]] (map vector loop (concat (rest loop) [(first loop)]))
+                                :when (and (< (abs (- y1 y0)) 1e-6) (> (abs (- x1 x0)) 1))]
+                            (round1 y0)))]
+      {:xline [0 length]
+       :member [(- (:part/start-ext main)) (+ length (:part/end-ext main))]
+       :y [(round1 (apply min ys)) (round1 (apply max ys))]
+       :edges (vec (sort (distinct (mapcat flat loops))))})))
 
 ;; --- preview models ------------------------------------------------------------------
 
@@ -149,41 +180,66 @@
 (defn- regenerated [m extra]
   (merge (select-keys (core/regenerate m) [:instructions :errors]) {:model m} extra))
 
+(def arrangements
+  "How the connection preview arranges the support, for its picker."
+  [[:column "Vertical column"] [:beam "Horizontal beam, framed into at 90°"]])
+
 (defn connection-preview
-  "A beam of `size` running into a column of `support-size`, its end made by
-  the draft connection template. {:instructions :errors :model}."
-  [lib templates draft {:keys [size support-size]}]
+  "An owner of `size` running into a support of `support-size`, its end made
+  by the draft connection template. The support is a vertical column, or
+  with `:arrangement :beam` a horizontal beam the owner meets at 90 degrees
+  at mid-span, tops flush. {:instructions :errors :model}."
+  [lib templates draft {:keys [size support-size arrangement]}]
   (let [id (or (:template/id draft) :preview/draft)
+        z column-height
+        [support owner-end] (if (= :beam arrangement)
+                              [(beam :support {:node/at [0 -2000 z]} {:node/at [0 2000 z]} support-size)
+                               {:node/on :support :node/station 2000}]
+                              [(column :support 0 support-size) {:node/of :support :node/end :end}])
         m (-> (base-model lib (assoc templates id (assoc draft :template/id id))
-                          [(column :column 0 support-size)
-                           (beam :beam {:node/at [-1500 0 column-height]} {:node/of :column :node/end :end} size)])
-              (assoc :connections {:joint {:connection/id :joint :connection/owner :beam :connection/end :end
-                                           :connection/refs [:column] :connection/template id}}))]
+                          [support (beam :owner {:node/at [-1500 0 z]} owner-end size)])
+              (assoc :connections {:joint {:connection/id :joint :connection/owner :owner :connection/end :end
+                                           :connection/refs [:support] :connection/template id}}))]
     (regenerated m {})))
 
+(def preview-length 3000)
+
 (defn assembly-preview
-  "The draft assembly template applied at `size` in the preview bay: on a
-  beam between two columns of `support-size`, or on a lone column for a
-  column template. {:instructions :errors :warnings :model}."
-  [lib templates draft {:keys [size support-size length] :or {length 4000}}]
+  "The draft assembly template applied at `size` to its member alone, on an
+  XLine with nothing at either end, so no connection is made: what the
+  template does to the member itself. {:instructions :errors :model}."
+  [lib templates draft {:keys [size length] :or {length preview-length}}]
   (let [id (or (:template/id draft) :preview/draft)
         draft (assoc draft :template/id id)
-        column? (= :column (:template/role draft))
         m (base-model lib (assoc templates id draft)
-                      (if column?
-                        [(column :member 0 size)]
-                        [(column :column-a 0 support-size)
-                         (column :column-b length support-size)
-                         (beam :member {:node/of :column-a :node/end :end} {:node/of :column-b :node/end :end} size)]))
-        n (atom 0)
-        r (template/apply-template m :member draft size #(keyword "preview" (str "conn-" (swap! n inc))))]
+                      [(beam :member {:node/at [0 0 0]} {:node/at [length 0 0]} size)])
+        r (template/apply-template m :member draft size (constantly :preview/conn))]
     (if (:error r)
-      {:instructions {} :errors [(:error r)] :warnings [] :model m}
-      (regenerated (:model r) {:warnings (:warnings r)}))))
+      {:instructions {} :errors [(:error r)] :model m}
+      (regenerated (:model r) {}))))
+
+(defn save-edits
+  "The edits that save the assembly page of one assembly: the XLine's
+  rotation when it changed, then the assembly itself (:assembly/update)."
+  [state {:keys [rotation rotation-was]}]
+  (cond-> []
+    (and (number? rotation) (not= rotation rotation-was))
+    (conj {:edit/type :xline/set-rotation :xline/id (:xline/id state) :rotation rotation})
+    true
+    (conj {:edit/type :assembly/update :state (update state :main #(merge default-main %))})))
+
+(def role-names
+  "Member roles (construcad.edits/roles) in the order pickers offer them."
+  [[:column "Column"] [:beam "Beam"] [:rafter "Rafter"] [:joist "Joist"] [:purlin "Purlin"]
+   [:girt "Girt"] [:brace "Brace"] [:panel "Panel"]])
 
 (def ^:private families
-  {:column [#"UC" #"UBP" #"SHS" #"RHS" #"UB"]
-   :beam [#"UB\d" #"PFC" #"UC" #"RHS" #"SHS"]})
+  (let [beam [#"UB\d" #"PFC" #"UC" #"RHS" #"SHS"]
+        light [#"PFC" #"RHS" #"SHS" #"UB\d" #"EA"]]
+    {:column [#"UC" #"UBP" #"SHS" #"RHS" #"UB"]
+     :beam beam :rafter beam :joist beam
+     :purlin light :girt light
+     :brace [#"EA" #"UA" #"SHS" #"RHS" #"CHS"]}))
 
 (defn sizes-for-role
   "Designations to offer for a role, the role's usual families first
