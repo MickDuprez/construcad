@@ -29,9 +29,10 @@
   (let [{m :model} (seeded)
         view (edits/view m (keys (:xlines m)))]
     (is (= 7 (count (:instructions view))))
-    (testing "B2 comes from the end plate template, with plates and bolts"
+    (testing "B2 is copied from the end plate template, with plates and bolts"
       (is (= "Beam, end plates both ends"
-             (get-in m [:templates (get-in m [:xlines (by-mark m "B2") :assembly/template]) :template/name])))
+             (get-in m [:xlines (by-mark m "B2") :assembly/from-template :template/name])))
+      (is (every? :connection/actions (vals (:connections m))) "every seeded connection holds its own copy")
       (is (= [:b-2-xline :main :bolts-end :bolts-start :plate-end :plate-start]
              (map #(if (= :xline (:op %)) :b-2-xline (:id %))
                   (get-in view [:instructions (by-mark m "B2") :child :children])))))
@@ -169,16 +170,33 @@
   (let [{m :model building :building} (seeded)
         b2 (by-mark m "B2")
         ep (template-named m "End plate, 4 bolts")]
-    (testing "editing a connection template regenerates the members using it"
+    (testing "editing a connection template changes the library only: B2 keeps its own copies"
       (let [t (assoc-in (get-in m [:templates ep]) [:template/params :plate-t] 16)
             p (edits/plan m {:edit/type :template/save :template t})
-            plate (some #(when (= :plate-end (:id %)) %)
-                        (get-in (edits/patch m p) [:upsert b2 :child :children]))]
-        (is (= #{b2} (:changed p)))
-        (is (= 16 (get-in plate [:part/size :t])))
+            patch (edits/patch m p)]
+        (is (= #{} (:changed p)))
+        (is (= [[:template ep]] (:writes p)))
+        (is (empty? (:upsert patch)))
+        (is (= 16 (get-in patch [:templates ep :template/params :plate-t])) "the patch carries the library")
+        (is (= (get-in (edits/view m [b2]) [:instructions b2])
+               (get-in (edits/view (:model p) [b2]) [:instructions b2])))
         (let [project (random-uuid)
               [doc] (records/write-docs building (:model p) (:writes p) :project project)]
           (is (= project (:template/project doc))))))
+    (testing "nor does editing an assembly template"
+      (let [bp (template-named m "Beam, end plates both ends")
+            t (assoc (get-in m [:templates bp]) :template/end nil)
+            p (edits/plan m {:edit/type :template/save :template t})]
+        (is (= #{} (:changed p)))
+        (is (= (get-in m [:connections]) (get-in p [:model :connections])))))
+    (testing "a thumbnail is kept with the template, if it is a small image"
+      (let [png "data:image/png;base64,iVBORw0KGgo="
+            p (edits/plan m {:edit/type :template/save :template (assoc (get-in m [:templates ep]) :template/thumbnail png)})]
+        (is (= png (get-in p [:model :templates ep :template/thumbnail])))
+        (is (= :bad-thumbnail
+               (get-in (edits/plan m {:edit/type :template/save
+                                      :template (assoc (get-in m [:templates ep]) :template/thumbnail "javascript:x")})
+                       [:error :reason])))))
     (testing "a new assembly template gets an id from the server"
       (let [id (random-uuid)
             p (edits/plan m {:edit/type :template/save :new-id (constantly id)
@@ -224,6 +242,57 @@
                              :start {:node/of c1 :node/end :end} :end {:node/of c2 :node/end :end}})]
         (is (nil? (:error p)))
         (is (= "J1" (:assembly/mark (get-in (:model p) [:xlines (first (:changed p))]))))))))
+
+(deftest editing-one-connection
+  (let [{m :model building :building} (seeded)
+        b1 (by-mark m "B1") b2 (by-mark m "B2")
+        c (some #(when (and (= b2 (:connection/owner %)) (= :end (:connection/end %))) %) (vals (:connections m)))
+        column (first (:connection/refs c))
+        copy (assoc (select-keys c [:connection/name :connection/actions :connection/params])
+                    :connection/params (assoc (:connection/params c) :plate-t 20 :rows 3))
+        p (edits/plan m {:edit/type :connection/update :connection/id (:connection/id c) :xline/id b2
+                         :connection copy})
+        patch (edits/patch m p)]
+    (is (nil? (:error p)))
+    (is (= #{b2} (:changed p)))
+    (is (= [[:connection (:connection/id c)]] (:writes p)))
+    (testing "B2 and the columns it bolts into regenerate, nothing else"
+      (is (= (into #{b2} (vals (get-in (edits/assembly-page m b2) [:state :supports]))) (set (keys (:upsert patch)))))
+      (is (contains? (:upsert patch) column))
+      (is (not (contains? (:upsert patch) b1))))
+    (testing "B2's end plate takes the new copy; its start and the library do not change"
+      (let [part (fn [id] (some #(when (= id (:id %)) %) (get-in patch [:upsert b2 :child :children])))]
+        (is (= 20 (get-in (part :plate-end) [:part/size :t])))
+        (is (= 6 (get-in (part :bolts-end) [:part/size :count])))
+        (is (= 12 (get-in (part :plate-start) [:part/size :t]))))
+      (is (= (:templates m) (:templates (:model p)))))
+    (testing "the column is drilled for six bolts from this end"
+      (let [col (some #(when (= :subtract (:op %)) %) (get-in patch [:upsert column :child :children]))]
+        (is (= 6 (count (:tools col))))))
+    (testing "the stored connection keeps its provenance"
+      (let [[doc] (records/write-docs building (:model p) (:writes p))]
+        (is (= "End plate, 4 bolts" (get-in doc [:connection/from-template :template/name])))
+        (is (= 20 (get-in doc [:connection/params :plate-t])))))
+    (testing "refused: someone else's connection, unknown connection, bad recipe"
+      (let [plan #(edits/plan m (merge {:edit/type :connection/update :connection/id (:connection/id c)
+                                        :xline/id b2 :connection copy} %))]
+        (is (= :edit/not-the-owner (get-in (plan {:xline/id b1}) [:error :error/type])))
+        (is (= :edit/unknown-connection (get-in (plan {:connection/id (random-uuid)}) [:error :error/type])))
+        (is (= :unknown-action (get-in (plan {:connection (assoc copy :connection/actions [{:action/type :glue}])})
+                                       [:error :reason])))
+        (is (= :no-actions (get-in (plan {:connection (assoc copy :connection/actions [])}) [:error :reason])))))))
+
+(deftest reapplying-from-the-library
+  (let [{m :model} (seeded)
+        b2 (by-mark m "B2")
+        bp (get-in m [:xlines b2 :assembly/from-template :template/id])
+        ep (some (fn [[id t]] (when (= "End plate, 4 bolts" (:template/name t)) id)) (:templates m))
+        m (:model (edits/plan m {:edit/type :template/save
+                                 :template (assoc-in (get-in m [:templates ep]) [:template/params :plate-t] 16)}))
+        p (edits/plan m {:edit/type :assembly/apply-template :xline/ids [b2] :template/id bp :size "310UB40.4"})]
+    (is (every? #(= 16 (get-in % [:connection/params :plate-t]))
+                (filter #(= b2 (:connection/owner %)) (vals (:connections (:model p)))))
+        "re-applying copies the library as it is now")))
 
 (deftest assembly-page
   (let [{m :model} (seeded)

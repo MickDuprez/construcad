@@ -75,11 +75,14 @@
                                                         :part/profile {:section/builder :rect :b 150 :d 4800}
                                                         :part/insert :bottom-centre}]})])
                :templates (starter-templates {:square-cut tpl :end-plate ep :beam-cut bc
-                                              :beam-plates bp :column col})
-               :connections {c1 {:connection/id c1 :connection/owner bm1 :connection/end :start
-                                 :connection/refs [a1] :connection/template tpl}
-                             c2 {:connection/id c2 :connection/owner bm1 :connection/end :end
-                                 :connection/refs [b1] :connection/template tpl}}}
+                                              :beam-plates bp :column col})}
+        ;; B1's ends are square cut, each with its own copy of the template
+        square-cut (template/connection-copy (:templates model) {:connection/template tpl})
+        model (assoc model :connections
+                     {c1 (merge {:connection/id c1 :connection/owner bm1 :connection/end :start
+                                 :connection/refs [a1]} square-cut)
+                      c2 (merge {:connection/id c2 :connection/owner bm1 :connection/end :end
+                                 :connection/refs [b1]} square-cut)})
         ;; B2 is built from the end plate assembly template
         model (:model (template/apply-template model bm2 (get-in model [:templates bp]) "310UB40.4"))]
     {:project-id project

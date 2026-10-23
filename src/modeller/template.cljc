@@ -12,16 +12,74 @@
      :template/start {:connection/template :conn/end-plate :connection/params {}}
      :template/end   {:connection/template :conn/end-plate :connection/params {}}}
 
-  Applying it to an XLine writes the main part with the chosen size and makes
-  one connection per end whose node sits on another XLine; the supporting
-  XLine is read from the node itself. The XLine remembers the template and
-  size, so editing the template later re-applies it everywhere it is used.
+  Templates are starting points, copied and never linked. Applying one to
+  an XLine writes the main part with the chosen size and makes one
+  connection per end whose node sits on another XLine (the supporting XLine
+  is read from the node itself), each with its own copy of the connection
+  template's name, actions and parameters. The assembly and each connection
+  note where they came from (:assembly/from-template,
+  :connection/from-template: id and name) and nothing more, so editing a
+  library template later changes no assembly. Re-applying it to an
+  assembly copies its current version again.
+
+  An end condition names a library connection template (with optional
+  parameter overrides), or is itself a copy ({:connection/name
+  :connection/actions :connection/params}), as an assembly's own ends are.
 
   A connection template knows nothing about member roles: only the two ECSs
   it joins and how (cut, plate, fin plate...). So the same template serves a
   beam to column or a joist to beam, and applying a template never changes
   the member's role, which is set when the assembly is created."
-  (:require [modeller.node :as node]))
+  (:require [modeller.assembly :as assembly]
+            [modeller.node :as node]))
+
+(defn provenance
+  "A note of the template something was copied from: id and name."
+  [t]
+  (when t {:template/id (:template/id t) :template/name (:template/name t)}))
+
+(defn connection-copy
+  "The connection an end condition makes: its own name, actions and
+  parameters, and where they came from. A condition naming a library
+  template is copied from it (its parameters with the condition's overrides
+  on top); a condition that is already a copy is kept as it is. nil for no
+  condition or an unknown template."
+  [templates condition]
+  (cond
+    (nil? condition) nil
+    (contains? condition :connection/actions) (select-keys condition assembly/recipe-keys)
+    :else (when-let [t (get templates (:connection/template condition))]
+            (when (= :connection (:template/kind t :connection))
+              {:connection/name (:template/name t)
+               :connection/actions (vec (:template/actions t))
+               :connection/params (merge (:template/params t) (:connection/params condition))
+               :connection/from-template (provenance t)}))))
+
+(defn copy->template
+  "A connection's copy as a connection template draft (no id), to edit in
+  the connection editor or save to the library."
+  [{:connection/keys [name actions params]}]
+  {:template/kind :connection :template/name name
+   :template/actions (vec actions) :template/params (or params {})})
+
+(defn template->copy
+  "A connection template draft back as a connection's copy, `from` its
+  provenance."
+  [t from]
+  (cond-> {:connection/name (:template/name t)
+           :connection/actions (vec (:template/actions t))
+           :connection/params (or (:template/params t) {})}
+    from (assoc :connection/from-template from)))
+
+(defn assembly-provenance
+  "Where an assembly came from, {:template/id :template/name}, or nil.
+  Assemblies saved before templates were copied hold a bare id, in
+  :assembly/template (then a live link) or :assembly/from-template."
+  [m x]
+  (let [p (or (:assembly/from-template x) (:assembly/template x))]
+    (cond
+      (map? p) p
+      (some? p) {:template/id p :template/name (get-in m [:templates p :template/name])})))
 
 (defn supporting-xline
   "The XLine an end node sits on (:node/of or :node/on), or nil."
@@ -29,49 +87,51 @@
   (let [ref (get xline (if (= :start end) :xline/start :xline/end))]
     (first (node/depends-on ref))))
 
-(defn- existing-connection
-  "Id of the connection already on this XLine end, so applying a template
-  again replaces it instead of adding another."
+(defn existing-connection
+  "The connection already on this XLine end, or nil."
   [m xline-id end]
-  (some #(when (and (= xline-id (:connection/owner %)) (= end (:connection/end %)))
-           (:connection/id %))
+  (some #(when (and (= xline-id (:connection/owner %)) (= end (:connection/end %))) %)
         (vals (:connections m))))
 
 (defn apply-template
-  "Model with `template` applied to XLine `xline-id` at section `size`.
-  Returns {:model m' :changed #{id} :connections {:upsert [ids] :remove [ids]}
-  :warnings [...]} or {:error e}. New connection ids come from `new-id`
-  (default: a random UUID)."
+  "Model with `template` applied to XLine `xline-id` at section `size`: the
+  main part and both ends copied from it. Returns {:model m' :changed #{id}
+  :connections {:upsert [ids] :remove [ids]} :warnings [...]} or {:error e}.
+  New connection ids come from `new-id` (default: a random UUID); an end
+  that already has a connection keeps its id."
   ([m xline-id template size] (apply-template m xline-id template size random-uuid))
   ([m xline-id template size new-id]
-  (let [xline (get-in m [:xlines xline-id])]
+  (let [xline (get-in m [:xlines xline-id])
+        condition #(get template (if (= :start %) :template/start :template/end))
+        copies (into {} (for [end [:start :end]] [end (connection-copy (:templates m) (condition end))]))]
     (cond
       (nil? xline) {:error {:error/type :template/unknown-xline :xline/id xline-id}}
       (not= :assembly (:template/kind template)) {:error {:error/type :template/not-an-assembly}}
       (and (string? size) (:sections m) (not (contains? (:sections m) size)))
       {:error {:error/type :template/unknown-size :size size}}
+      (some #(and (condition %) (nil? (copies %))) [:start :end])
+      {:error {:error/type :template/unknown-connection-template}}
       :else
       (let [main (merge {:part/id :main :part/kind :extrusion}
                         (:template/main template)
                         {:part/profile size})
-            xline' (assoc xline
-                          :assembly/parts (into [main] (:template/extra-parts template))
-                          :assembly/template (:template/id template)
-                          :assembly/size size)
+            xline' (cond-> (-> xline
+                               (dissoc :assembly/template)
+                               (assoc :assembly/parts (into [main] (:template/extra-parts template))
+                                      :assembly/size size))
+                     (:template/id template) (assoc :assembly/from-template (provenance template)))
             ends (for [end [:start :end]
-                       :let [condition (get template (if (= :start end) :template/start :template/end))
-                             cid (or (existing-connection m xline-id end) (new-id))
+                       :let [cid (or (:connection/id (existing-connection m xline-id end)) (new-id))
                              support (supporting-xline xline end)]]
-                   {:end end :cid cid :condition condition :support support})
+                   {:end end :cid cid :copy (copies end) :support support})
             owned-old (set (for [c (vals (:connections m))
                                  :when (= xline-id (:connection/owner c))]
                              (:connection/id c)))
-            new-conns (for [{:keys [end cid condition support]} ends
-                            :when (and condition support (contains? (:xlines m) support))]
-                        {:connection/id cid :connection/owner xline-id :connection/end end
-                         :connection/refs [support]
-                         :connection/template (:connection/template condition)
-                         :connection/params (:connection/params condition {})})
+            new-conns (for [{:keys [end cid copy support]} ends
+                            :when (and copy support (contains? (:xlines m) support))]
+                        (merge {:connection/id cid :connection/owner xline-id :connection/end end
+                                :connection/refs [support]}
+                               copy))
             new-ids (set (map :connection/id new-conns))
             removed (remove new-ids owned-old)
             m' (-> m
@@ -81,32 +141,22 @@
         {:model m'
          :changed #{xline-id}
          :connections {:upsert (vec new-ids) :remove (vec removed)}
-         :warnings (vec (for [{:keys [end condition support]} ends
-                              :when (and condition (not support))]
+         :warnings (vec (for [{:keys [end copy support]} ends
+                              :when (and copy (not support))]
                           {:warning/type :template/end-not-on-xline :xline/id xline-id :end end}))})))))
 
-(defn users
-  "XLine ids built from template `id`."
-  [m id]
-  (set (for [[xid x] (:xlines m) :when (= id (:assembly/template x))] xid)))
-
-(defn reapply
-  "Re-apply a (changed) assembly template to every XLine that uses it, each at
-  its own size. Returns the same shape as apply-template, merged."
-  ([m template] (reapply m template random-uuid))
-  ([m template new-id]
-  (reduce (fn [acc xid]
-            (let [r (apply-template (:model acc) xid template (get-in acc [:model :xlines xid :assembly/size]) new-id)]
-              (if (:error r)
-                (update acc :errors conj (:error r))
-                (-> acc
-                    (assoc :model (:model r))
-                    (update :changed into (:changed r))
-                    (update-in [:connections :upsert] into (get-in r [:connections :upsert]))
-                    (update-in [:connections :remove] into (get-in r [:connections :remove]))
-                    (update :warnings into (:warnings r))))))
-          {:model m :changed #{} :connections {:upsert [] :remove []} :warnings [] :errors []}
-          (sort-by str (users m (:template/id template))))))
+(defn update-connection
+  "Replace one connection's own copy: name, actions and parameters, and its
+  provenance when `copy` gives one. A connection from before copies (a
+  library id and overrides) becomes a copy. {:model m' :changed #{owner}} or
+  {:error e}."
+  [m id copy]
+  (if-let [c (get-in m [:connections id])]
+    (let [recipe (merge (assembly/own-recipe m c) (select-keys copy assembly/recipe-keys))]
+      {:model (assoc-in m [:connections id]
+                        (merge (apply dissoc c :connection/template assembly/recipe-keys) recipe))
+       :changed #{(:connection/owner c)}})
+    {:error {:error/type :connection/unknown :connection/id id}}))
 
 ;; --- editing one assembly ------------------------------------------------------
 
@@ -115,21 +165,18 @@
 
 (defn assembly-state
   "One assembly as the assembly page shows it: mark, role, size, the main
-  member's placement and each end's connection template and overrides."
+  member's placement, each end's connection (its id and its own copy) and
+  where the assembly came from."
   [m xline-id]
   (when-let [x (get-in m [:xlines xline-id])]
     (let [main (first (:assembly/parts x))
           end-state (fn [end]
-                      (when-let [c (some #(when (and (= xline-id (:connection/owner %))
-                                                     (= end (:connection/end %))) %)
-                                         (vals (:connections m)))]
-                        {:connection/template (:connection/template c)
-                         :connection/params (:connection/params c {})}))]
+                      (when-let [c (existing-connection m xline-id end)]
+                        (assoc (assembly/own-recipe m c) :connection/id (:connection/id c))))]
       {:xline/id xline-id
        :assembly/mark (:assembly/mark x)
        :xline/role (:xline/role x)
-       :assembly/template (:assembly/template x)
-       :assembly/from-template (:assembly/from-template x)
+       :assembly/from-template (assembly-provenance m x)
        :assembly/size (or (:assembly/size x) (:part/profile main))
        ;; a part without an insertion point sits at its centre (profile/insertion-shift)
        :main (merge {:part/insert :centre} (select-keys main placement-keys))
@@ -138,21 +185,23 @@
        :supports {:start (supporting-xline x :start) :end (supporting-xline x :end)}})))
 
 (defn update-assembly
-  "Apply the assembly page's state to one assembly. Edited by hand, the
-  assembly no longer follows its template (it keeps a note of where it came
-  from), so a later template edit will not overwrite these choices.
-  Same result shape as apply-template."
+  "Apply the assembly page's state to one assembly: its placement and size,
+  and each end's connection (the copy it has, or a library template to
+  copy). It keeps its note of where it came from. Same result shape as
+  apply-template."
   ([m state] (update-assembly m state random-uuid))
   ([m {id :xline/id :keys [main start end] mark :assembly/mark role :xline/role size :assembly/size}
     new-id]
    (let [x (get-in m [:xlines id])
+         strip #(when % (dissoc % :connection/id))
          inline {:template/kind :assembly :template/id nil
-                 :template/main main :template/start start :template/end end}
-         r (apply-template m id inline size new-id)]
+                 :template/main main :template/start (strip start) :template/end (strip end)}
+         r (apply-template m id inline size new-id)
+         from (assembly-provenance m x)]
      (if (:error r)
        r
        (update-in r [:model :xlines id]
-                  #(cond-> (assoc % :assembly/template nil
-                                  :assembly/from-template (or (:assembly/template x) (:assembly/from-template x)))
+                  #(cond-> %
+                     from (assoc :assembly/from-template from)
                      mark (assoc :assembly/mark mark)
                      role (assoc :xline/role role)))))))

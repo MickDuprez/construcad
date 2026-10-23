@@ -15,16 +15,24 @@
      :part/start-ext 0                ; length beyond the start node (negative = set back)
      :part/end-ext   0}
 
-  A connection, owned by the XLine whose end it sits on:
+  A connection, owned by the XLine whose end it sits on, carries its own
+  copy of the recipe: an ordered list of actions (each a map with
+  :action/type) and the parameters they read. The template it was copied
+  from is noted, nothing more; editing that template later changes nothing
+  here.
 
-    {:connection/id       :c-b1-end
-     :connection/owner    :b1
-     :connection/end      :end
-     :connection/refs     [:c2]
-     :connection/template :fin-cut
-     :connection/params   {:gap 10}}
+    {:connection/id            :c-b1-end
+     :connection/owner         :b1
+     :connection/end           :end
+     :connection/refs          [:c2]
+     :connection/name          \"Square cut\"
+     :connection/actions       [{:action/type :cut-to-face :action/face :auto}]
+     :connection/params        {:gap 10}
+     :connection/from-template {:template/id :square-cut :template/name \"Square cut\"}}
 
-  A template is an ordered list of actions, each a map with :action/type."
+  A connection saved before connections held copies has
+  :connection/template (a library id) and per-end overrides in
+  :connection/params instead; it is read through that template (own-recipe)."
   (:require [modeller.frame :as frame]
             [modeller.instr :as instr]
             [modeller.model :as model]
@@ -208,15 +216,30 @@
   (let [p (:part/profile part)]
     (if (map? p) p (get-in model [:sections p :section/data]))))
 
+(def recipe-keys
+  [:connection/name :connection/actions :connection/params :connection/from-template])
+
+(defn own-recipe
+  "A connection's own name, actions, parameters and provenance. One saved
+  before connections held copies names a library template
+  (:connection/template) and keeps only per-end overrides: it is read
+  through that template, as it was made."
+  [model conn]
+  (if (contains? conn :connection/actions)
+    (select-keys conn recipe-keys)
+    (let [t (get-in model [:templates (:connection/template conn)])]
+      (cond-> {:connection/name (:template/name t)
+               :connection/actions (vec (:template/actions t))
+               :connection/params (merge (:template/params t) (:connection/params conn))}
+        t (assoc :connection/from-template {:template/id (:template/id t) :template/name (:template/name t)})))))
+
 (defn- connection-context [model resolved owner-id owner conn]
   (let [ref-id (first (:connection/refs conn))
         ref-xline (get-in model [:xlines ref-id])
         owner-data (section-data model (main-part owner))
         support-data (some->> (main-part ref-xline) (section-data model))
-        {:keys [params errors]} (params/resolve-params
-                                 (merge (get-in model [:templates (:connection/template conn) :template/params])
-                                        (:connection/params conn))
-                                 owner-data support-data)]
+        {:keys [params errors]} (params/resolve-params (:connection/params (own-recipe model conn))
+                                                       owner-data support-data)]
     {:model model
      :conn conn
      :owner owner
@@ -240,11 +263,10 @@
 (defn- apply-connection [model resolved id xline parts conn]
   (if-let [e (model/connection-error model conn)]
     (update parts ::errors conj e)
-    (let [ctx (connection-context model resolved id xline conn)
-          tpl (get-in model [:templates (:connection/template conn)])]
+    (let [ctx (connection-context model resolved id xline conn)]
       (reduce #(apply-action ctx %2 %1)
               (update parts ::errors into (:param-errors ctx))
-              (:template/actions tpl)))))
+              (:connection/actions (own-recipe model conn))))))
 
 (defn support-cuts
   "Cutting solids that connections owned by other XLines put into XLine

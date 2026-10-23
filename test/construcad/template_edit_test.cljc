@@ -1,5 +1,7 @@
 (ns construcad.template-edit-test
   (:require [clojure.test :refer [deftest is testing]]
+            [construcad.edits :as edits]
+            [construcad.edits-test]
             [construcad.seed :as seed]
             [construcad.template-edit :as te]
             [modeller.assembly :as assembly]
@@ -7,6 +9,7 @@
             [modeller.instr :as instr]
             [modeller.library :as library]
             [modeller.sections-au :as au]
+            [modeller.template :as template]
             [modeller.vec :as v]))
 
 (def lib (library/library {} au/rows))
@@ -148,16 +151,40 @@
     (testing "a vertical XLine is seen as if it ran along X"
       (is (near3? [0 -1 0] (dir [[0 0 0] [0 0 4200]] "Side"))))))
 
-(deftest end-conditions
-  (let [condition {:connection/template :end-plate :connection/params {:plate-t 16}}
-        {:keys [template rows errors]} (te/end-summary lib templates condition "310UB40.4" "200UC46.2")
-        row (fn [k] (some #(when (= k (:param %)) %) rows))]
-    (is (= "End plate, 4 bolts" (:template/name template)))
+(deftest end-cards
+  (testing "an assembly template's end names a library connection template"
+    (let [info (te/end-info templates {:connection/template :end-plate})]
+      (is (= "End plate, 4 bolts" (:name info)))
+      (is (= [:end-plate :bolt-group] (:actions info)))
+      (is (:library? info))
+      (is (= :end-plate (get-in info [:from :template/id])))))
+  (testing "an assembly's end is its own copy, which says where it came from"
+    (let [copy (assoc (template/connection-copy templates {:connection/template :end-plate})
+                      :connection/name "End plate, 6 bolts")
+          info (te/end-info (assoc-in templates [:end-plate :template/thumbnail] "data:image/png;base64,x") copy)]
+      (is (= "End plate, 6 bolts" (:name info)))
+      (is (not (:library? info)))
+      (is (= "End plate, 4 bolts" (get-in info [:from :template/name])))
+      (is (= "data:image/png;base64,x" (:thumbnail info)) "the library template's thumbnail, while it has one")))
+  (testing "an unknown template, and no connection"
+    (is (false? (:known? (te/end-info templates {:connection/template :nope}))))
+    (is (nil? (te/end-info templates nil)))))
+
+(deftest editing-one-assemblys-connection
+  (let [{m :model} (construcad.edits-test/seeded)
+        b2 (construcad.edits-test/by-mark m "B2")
+        {:keys [state context]} (edits/assembly-page m b2)
+        column (get-in state [:supports :end])
+        draft (assoc-in (template/copy->template (:end state)) [:template/params :rows] 3)
+        {:keys [instructions errors nodes]} (te/connection-instance-preview lib (:templates m) context state :end draft)]
     (is (empty? errors))
-    (is (= 324.0 (:value (row :plate-h))))
-    (is (= {:value 16 :template-value 12 :override 16 :overridden? true :needs-support? false} (dissoc (row :plate-t) :param)))
-    (is (false? (:overridden? (row :gap)))))
-  (is (nil? (te/end-summary lib templates nil "310UB40.4" "200UC46.2"))))
+    (testing "the real member and the real column it frames into, where they are"
+      (is (= #{b2 column} (set (keys instructions))))
+      (is (= 2 (count nodes))))
+    (testing "the draft is this end's: six bolts at the end, four at the start"
+      (is (= 6 (get-in (part (get instructions b2) :bolts-end) [:part/size :count])))
+      (is (= 4 (get-in (part (get instructions b2) :bolts-start) [:part/size :count])))
+      (is (= 6 (count (:tools (part (get instructions column) :main))))))))
 
 (deftest size-pickers
   (let [sections (map #(hash-map :section/designation %) ["200x200x26EA" "460UB82.1" "310UC158" "380PFC" "310UB40.4"])]
@@ -165,22 +192,6 @@
     (is (= "310UC158" (first (te/sizes-for-role sections :column))))
     (is (= "200x200x26EA" (first (te/sizes-for-role sections :brace))))
     (is (= "460UB82.1" (first (te/sizes-for-role sections :joist))))))
-
-(deftest support-free-end-conditions
-  (testing "an assembly template's card resolves without a support: support formulas wait for one"
-    (let [t (assoc-in (:end-plate templates) [:template/params :plate-dy] "(:tf support)")
-          {:keys [rows errors]} (te/end-summary lib (assoc templates :end-plate t)
-                                                {:connection/template :end-plate} "310UB40.4" nil)
-          row (fn [k] (some #(when (= k (:param %)) %) rows))]
-      (is (empty? errors))
-      (is (:needs-support? (row :plate-dy)))
-      (is (not (:needs-support? (row :plate-h))))
-      (is (= 324.0 (:value (row :plate-h))))
-      (testing "with a support it resolves"
-        (let [{:keys [rows errors]} (te/end-summary lib (assoc templates :end-plate t)
-                                                    {:connection/template :end-plate} "310UB40.4" "200UC46.2")]
-          (is (empty? errors))
-          (is (not-any? :needs-support? rows)))))))
 
 (deftest member-space-previews
   (is (frame/valid? te/member-space))

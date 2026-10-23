@@ -101,26 +101,24 @@
                          (section-data lib size)
                          (section-data lib support-size)))
 
-(defn- uses-support? [v] (and (string? v) (boolean (re-find #"\bsupport\b" v))))
-
-(defn end-summary
-  "What an end condition does for an owner of `size`: the connection
-  template, its resolved parameters (template order, overrides marked) and
-  any formula errors. nil when the end has no connection. With no
-  `support-size` (an assembly template can't know what its ends will sit on)
-  a formula over `support` is marked :needs-support? instead of failing."
-  [lib templates condition size support-size]
-  (when-let [t (get templates (:connection/template condition))]
-    (let [overrides (:connection/params condition {})
-          {:keys [params errors]} (resolve-for lib t overrides size support-size)
-          waits? (fn [k] (and (nil? support-size)
-                              (uses-support? (get overrides k (get-in t [:template/params k])))))]
-      {:template t
-       :rows (for [k (distinct (concat (keys (:template/params t)) (keys overrides)))]
-               {:param k :value (get params k) :template-value (get-in t [:template/params k])
-                :override (get overrides k) :overridden? (contains? overrides k)
-                :needs-support? (waits? k)})
-       :errors (remove (comp waits? :param) errors)})))
+(defn end-info
+  "What an end's card shows: the connection's name, its actions in order,
+  the library template it is (an assembly template's end) or came from (an
+  assembly's end, a copy) and that template's thumbnail when the library
+  still has it. nil when the end has no connection."
+  [templates condition]
+  (when condition
+    (let [copy (template/connection-copy templates condition)
+          from (if (contains? condition :connection/actions)
+                 (:connection/from-template condition)
+                 (template/provenance (get templates (:connection/template condition))))
+          t (get templates (:template/id from))]
+      {:name (or (:connection/name copy) (:template/name from) "Unnamed connection")
+       :actions (mapv :action/type (:connection/actions copy))
+       :from from
+       :library? (not (contains? condition :connection/actions))
+       :known? (some? copy)
+       :thumbnail (:template/thumbnail t)})))
 
 ;; --- end-on view of the main member -------------------------------------------------
 
@@ -173,16 +171,16 @@
   with `:arrangement :beam` a horizontal beam the owner meets at 90 degrees
   at mid-span, tops flush. {:instructions :errors :model}."
   [lib templates draft {:keys [size support-size arrangement]}]
-  (let [id (or (:template/id draft) :preview/draft)
-        z column-height
+  (let [z column-height
         [support owner-end] (if (= :beam arrangement)
                               [(beam :support {:node/at [0 -2000 z]} {:node/at [0 2000 z]} support-size)
                                {:node/on :support :node/station 2000}]
                               [(column :support 0 support-size) {:node/of :support :node/end :end}])
-        m (-> (base-model lib (assoc templates id (assoc draft :template/id id))
-                          [support (beam :owner {:node/at [-1500 0 z]} owner-end size)])
-              (assoc :connections {:joint {:connection/id :joint :connection/owner :owner :connection/end :end
-                                           :connection/refs [:support] :connection/template id}}))]
+        m (-> (base-model lib templates [support (beam :owner {:node/at [-1500 0 z]} owner-end size)])
+              ;; the joint holds a copy of the draft, as a real connection does
+              (assoc :connections {:joint (merge {:connection/id :joint :connection/owner :owner :connection/end :end
+                                                  :connection/refs [:support]}
+                                                 (template/template->copy draft nil))}))]
     (regenerated m {})))
 
 (defn- member-only
@@ -323,6 +321,31 @@
     (if (:error r)
       {:instructions {} :nodes [] :errors [(:error r)] :model m}
       (member-only (:model r) id))))
+
+(defn connection-instance-preview
+  "One end's connection of a real assembly, with `draft` (a connection
+  template draft, construcad.template-edit's editor shape) in place of its
+  own copy: the assembly `state` applied to `context` (as instance-preview)
+  and regenerated with what that end sits on, both drawn where they are in
+  the model. {:instructions {id i} :nodes [start end] :errors :model}."
+  [lib templates context state end draft]
+  (let [id (:xline/id state)
+        support (get-in state [:supports end])
+        copy (template/template->copy draft (get-in state [end :connection/from-template]))
+        m (merge context {:builders (:builders lib) :sections (:sections lib)
+                          :templates (merge templates (:templates context))})
+        r (template/update-assembly m (-> state
+                                          (update :main #(merge default-main %))
+                                          (update end merge copy))
+                                    (let [n (atom 0)] #(keyword "preview" (str "conn" (swap! n inc)))))]
+    (if (:error r)
+      {:instructions {} :nodes [] :errors [(:error r)] :model m}
+      (let [{:keys [resolved instructions errors]} (core/regenerate (:model r) (remove nil? [id support]))
+            {:keys [start end]} (get resolved id)]
+        {:instructions instructions
+         :nodes (if start [start end] [])
+         :errors errors
+         :model (:model r)}))))
 
 (def member-space
   "Where the assembly page shows a member: its XLine along +X from the

@@ -132,26 +132,29 @@
   (when-let [x (get-in view [:xlines id])]
     (let [{:keys [state supports]} page
           size (or (:assembly/size x) (:assembly/profile x) (:assembly/size state))
-          tname #(or (template-name %) "(unknown)")]
+          ;; provenance is {:template/id :template/name}; older records hold a bare id
+          from (fn [p] (cond
+                         (map? p) {:id (:template/id p)
+                                   :name (or (:template/name p) (template-name (:template/id p)) "(unknown)")}
+                         (some? p) {:id p :name (or (template-name p) "(unknown)")}))]
       {:id id
        :mark (:assembly/mark x "XLine")
        :role (:xline/role x)
        :role-label (role-label (:xline/role x) "XLine")
        :size (or (size-text size) (when size "custom section"))
-       :template (cond
-                   (:assembly/template x) {:kind :template :id (:assembly/template x)
-                                           :name (tname (:assembly/template x))}
-                   (:assembly/from-template x) {:kind :edited :id (:assembly/from-template x)
-                                                :name (tname (:assembly/from-template x))}
-                   :else {:kind :none})
+       :template (if-let [p (from (or (:assembly/from-template x) (:assembly/template x)))]
+                   (assoc p :kind :from)
+                   {:kind :none})
        :length (get-in view [:resolved id :length])
        :level (some #(when (= (assembly-level (:levels view) (get-in view [:resolved id])) (:xt/id %))
                        (:level/name %))
                     (:levels view))
        :ends (when page
                (into {} (for [end [:start :end]
-                              :let [tid (get-in state [end :connection/template])
+                              :let [c (get state end)
                                     s (get supports end)]]
                           [end (cond-> {:support (when s (select-keys s [:assembly/mark :size :xline/role]))}
-                                 tid (assoc :template-id tid :template-name (tname tid)))])))
+                                 c (assoc :connection-id (:connection/id c)
+                                          :name (:connection/name c)
+                                          :from (from (:connection/from-template c))))])))
        :parts (parts (get-in view [:instructions id]) size)})))

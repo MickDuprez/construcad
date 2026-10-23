@@ -39,12 +39,18 @@
                 [:connection/owner :uuid]
                 [:connection/end [:enum :start :end]]
                 [:connection/refs [:vector :uuid]]
-                [:connection/template :uuid]]
+                ;; its own copy of the recipe; connections saved before copies
+                ;; name a library template instead
+                [:connection/name {:optional true} :string]
+                [:connection/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]
+                [:connection/template {:optional true} :uuid]]
    :template [:map {:closed false}
               [:xt/id :uuid]
               [:template/project :uuid]
               [:template/kind [:enum :connection :assembly]]
               [:template/name :string]
-              [:template/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]]})
+              [:template/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]
+              ;; a small PNG preview (data URL), captured when it is saved
+              [:template/thumbnail {:optional true} :string]]})
 
 (def module {:schema schema})

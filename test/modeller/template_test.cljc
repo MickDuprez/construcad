@@ -1,5 +1,6 @@
 (ns modeller.template-test
   (:require [clojure.test :refer [deftest is testing]]
+            [modeller.assembly :as assembly]
             [modeller.core :as core]
             [modeller.fixtures :as fx]
             [modeller.frame :as frame]
@@ -33,8 +34,19 @@
         b2 (get-in model [:xlines :b-2])]
     (is (= #{:b-2} changed))
     (is (empty? warnings))
-    (is (= :tpl/beam-end-plates (:assembly/template b2)))
+    (is (= {:template/id :tpl/beam-end-plates :template/name "Beam, end plates both ends"}
+           (:assembly/from-template b2))
+        "the assembly notes where it came from")
+    (is (not (contains? b2 :assembly/template)) "and holds no live link")
     (is (= "310UB40.4" (:assembly/size b2)))
+    (testing "each connection is a copy of the connection template, not a link to it"
+      (let [c (get-in model [:connections :conn-1])
+            t (get-in model [:templates :conn/end-plate])]
+        (is (= "End plate, 4 bolts" (:connection/name c)))
+        (is (= (:template/actions t) (:connection/actions c)))
+        (is (= (:template/params t) (:connection/params c)))
+        (is (= {:template/id :conn/end-plate :template/name "End plate, 4 bolts"} (:connection/from-template c)))
+        (is (not (contains? c :connection/template)))))
     (testing "one connection per end, support read from the end node"
       (is (= 2 (count (:upsert connections))))
       (is (= [:c-a2] (get-in model [:connections :conn-1 :connection/refs])))
@@ -78,13 +90,67 @@
       (is (part b2 :plate-start))
       (is (part b2 :bolts-start)))))
 
-(deftest reapplying-after-a-template-edit
+(deftest library-edits-change-no-assembly
   (let [{:keys [model]} (applied)
-        tpl (assoc (get-in model [:templates :tpl/beam-end-plates]) :template/end nil)
-        r (template/reapply model tpl)]
-    (is (= #{:b-2} (:changed r)))
-    (is (= [:conn-2] (get-in r [:connections :remove])))
-    (is (= "310UB40.4" (get-in r [:model :xlines :b-2 :assembly/size])))))
+        before (:b-2 (:instructions (core/regenerate model [:b-2])))
+        ;; the library's end plate grows to 20 thick, the assembly template's end becomes a square cut
+        m' (-> model
+               (assoc-in [:templates :conn/end-plate :template/params :plate-t] 20)
+               (assoc-in [:templates :tpl/beam-end-plates :template/end] {:connection/template :square-cut}))]
+    (testing "B2 is built from its own copies, so it regenerates as it was"
+      (is (= before (:b-2 (:instructions (core/regenerate m' [:b-2]))))))
+    (testing "re-applying from the library copies the current version"
+      (let [r (template/apply-template m' :b-2 (get-in m' [:templates :tpl/beam-end-plates]) "310UB40.4" (counter))
+            conns (get-in r [:model :connections])]
+        (is (= 20 (get-in conns [:conn-1 :connection/params :plate-t])))
+        (is (= [{:action/type :cut-to-face :action/face :auto}] (get-in conns [:conn-2 :connection/actions])))
+        (is (empty? (get-in r [:connections :remove])) "each end keeps its connection id")))))
+
+(deftest a-connection-uses-its-own-recipe
+  (let [{:keys [model]} (applied)
+        built #(:b-2 (:instructions (core/regenerate % [:b-2])))
+        ids #(set (map :id (get-in % [:child :children])))]
+    (testing "its own actions: a square cut copy has no plate, whatever the library says"
+      (let [m (-> model
+                  (assoc-in [:connections :conn-2 :connection/actions] [{:action/type :cut-to-face}])
+                  (assoc-in [:connections :conn-2 :connection/params] {:gap 10}))]
+        (is (contains? (ids (built model)) :plate-end))
+        (is (not (contains? (ids (built m)) :plate-end)))
+        (is (contains? (ids (built m)) :plate-start))))
+    (testing "its own parameters"
+      (let [m (assoc-in model [:connections :conn-2 :connection/params :plate-t] 25)]
+        (is (= 25 (get-in (part (built m) :plate-end) [:part/size :t])))))
+    (testing "a connection from before copies is read through its library template"
+      (let [c (get-in fx/model [:connections :b-1-start])
+            {:keys [instructions errors]} (core/regenerate fx/model [:b-1])]
+        (is (not (contains? c :connection/actions)))
+        (is (empty? errors))
+        (is (= :slice (:op (part (:b-1 instructions) :main))))
+        (is (= {:connection/name nil :connection/actions [{:action/type :cut-to-face :action/face :auto}]
+                :connection/params {:gap 10}
+                :connection/from-template {:template/id :square-cut :template/name nil}}
+               (assembly/own-recipe fx/model c)))))))
+
+(deftest updating-one-connection
+  (let [{:keys [model]} (applied)
+        copy {:connection/name "Heavy plate" :connection/actions [{:action/type :end-plate}]
+              :connection/params {:plate-t 30}}
+        {m' :model :keys [changed]} (template/update-connection model :conn-2 copy)
+        c (get-in m' [:connections :conn-2])]
+    (is (= #{:b-2} changed))
+    (is (= "Heavy plate" (:connection/name c)))
+    (is (= {:plate-t 30} (:connection/params c)))
+    (is (= :end (:connection/end c)))
+    (is (= {:template/id :conn/end-plate :template/name "End plate, 4 bolts"} (:connection/from-template c))
+        "provenance stays unless the copy gives one")
+    (is (= (get-in model [:connections :conn-1]) (get-in m' [:connections :conn-1])) "the other end is untouched")
+    (testing "an old connection becomes a copy"
+      (let [c (get-in (template/update-connection fx/model :b-1-end {:connection/params {:gap 4}})
+                      [:model :connections :b-1-end])]
+        (is (not (contains? c :connection/template)))
+        (is (= [{:action/type :cut-to-face :action/face :auto}] (:connection/actions c)))
+        (is (= {:gap 4} (:connection/params c)))))
+    (is (:error (template/update-connection model :nope copy)))))
 
 (deftest templates-keep-the-member-role
   (let [m (assoc-in fx/model [:xlines :b-2 :xline/role] :joist)
@@ -97,9 +163,11 @@
     (testing "the page's state reads back what the template made"
       (is (= "310UB40.4" (:assembly/size state)))
       (is (= :top-centre (get-in state [:main :part/insert])))
-      (is (= :conn/end-plate (get-in state [:start :connection/template])))
+      (is (= "End plate, 4 bolts" (get-in state [:start :connection/name])))
+      (is (= :conn-1 (get-in state [:start :connection/id])))
+      (is (= :tpl/beam-end-plates (get-in state [:assembly/from-template :template/id])))
       (is (= {:start :c-a2 :end :c-b2} (:supports state))))
-    (testing "an edit changes size, placement and one end, and detaches from the template"
+    (testing "an edit changes size, placement and one end, and keeps its provenance"
       (let [r (template/update-assembly model (-> state
                                                   (assoc :assembly/size "250UB31.4" :assembly/mark "B9")
                                                   (assoc-in [:main :part/rotation] 180)
@@ -109,13 +177,19 @@
         (is (= "250UB31.4" (:assembly/size x)))
         (is (= "B9" (:assembly/mark x)))
         (is (= 180 (get-in x [:assembly/parts 0 :part/rotation])))
-        (is (nil? (:assembly/template x)))
-        (is (= :tpl/beam-end-plates (:assembly/from-template x)))
-        (is (= :tpl/beam-end-plates (:assembly/from-template (template/assembly-state (:model r) :b-2)))
-            "the page says where a hand-edited assembly came from")
-        (is (= :square-cut (get-in r [:model :connections :conn-2 :connection/template])))
-        (testing "so re-applying the template leaves it alone"
-          (is (empty? (:changed (template/reapply (:model r) (get-in r [:model :templates :tpl/beam-end-plates]))))))))
+        (is (= :tpl/beam-end-plates (get-in x [:assembly/from-template :template/id])))
+        (is (= :tpl/beam-end-plates (get-in (template/assembly-state (:model r) :b-2) [:assembly/from-template :template/id]))
+            "the page says where the assembly came from")
+        (testing "an end given a library template gets a copy of it, on the same connection"
+          (is (= [{:action/type :cut-to-face :action/face :auto}]
+                 (get-in r [:model :connections :conn-2 :connection/actions])))
+          (is (= :square-cut (get-in r [:model :connections :conn-2 :connection/from-template :template/id]))))
+        (testing "the other end keeps its own copy"
+          (is (= (get-in model [:connections :conn-1]) (get-in r [:model :connections :conn-1]))))))
+    (testing "a legacy assembly's bare template id reads as provenance"
+      (let [m (assoc-in fx/model [:xlines :b-1 :assembly/template] :tpl/beam-end-plates)]
+        (is (= {:template/id :tpl/beam-end-plates :template/name "Beam, end plates both ends"}
+               (:assembly/from-template (template/assembly-state m :b-1))))))
     (testing "an end set to nothing loses its connection"
       (let [r (template/update-assembly model (assoc state :start nil) (counter))]
         (is (= [:conn-1] (get-in r [:connections :remove])))))))

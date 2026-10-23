@@ -11,9 +11,12 @@
     {:edit/type :grid/relabel       :x-style :letters :y-style :numbers}
     {:edit/type :level/set-elevation :level/id id :elevation 4500}
     {:edit/type :assembly/apply-template :xline/ids [id ...] :template/id tid :size \"310UB40.4\"}
-    {:edit/type :template/save      :template {...}}   ; connection or assembly template
+    {:edit/type :template/save      :template {...}}   ; connection or assembly template (library only)
     {:edit/type :assembly/update    :state {...}}      ; one assembly, from the assembly page
                                                        ; (shape: modeller.template/assembly-state)
+    {:edit/type :connection/update  :connection/id id :xline/id owner
+     :connection {:connection/name .. :connection/actions [..] :connection/params {..}}}
+                                                       ; one connection's own copy
 
   `plan` returns {:model m' :changed #{xline ids} :writes [record ...]} or
   {:error e}. A record is [:assembly id], [:assembly/create id], [:grid],
@@ -233,9 +236,27 @@
           {:error (:error r)}
           (template-result->plan r []))))))
 
+(defn- copy-error
+  "Why a connection's own copy can't be saved, or nil."
+  [{:connection/keys [name actions params]}]
+  (cond
+    (not (and (string? name) (seq name))) {:reason :no-name}
+    (not (and (sequential? actions) (seq actions))) {:reason :no-actions}
+    (not-every? (comp known-actions :action/type) actions) {:reason :unknown-action}
+    (not (or (nil? params) (map? params))) {:reason :bad-params}))
+
+(defn- condition-ok?
+  "An end condition: none, a copy that can be saved, or a library
+  connection template to copy."
+  [m c]
+  (cond
+    (nil? c) true
+    (contains? c :connection/actions) (nil? (copy-error c))
+    :else (= :connection (get-in m [:templates (:connection/template c) :template/kind]))))
+
 (defmethod plan* :assembly/update [m {state :state new-id :new-id}]
   (let [id (:xline/id state)
-        conn-ok? #(or (nil? %) (= :connection (get-in m [:templates (:connection/template %) :template/kind])))]
+        conn-ok? #(condition-ok? m %)]
     (cond
       (not (contains? (:xlines m) id)) (error :edit/unknown-xline :xline/id id)
       (and (:xline/role state) (not (roles (:xline/role state)))) (error :edit/bad-role :role (:xline/role state))
@@ -248,10 +269,19 @@
     :connection (cond
                   (not (seq actions)) {:reason :no-actions}
                   (not-every? (comp known-actions :action/type) actions) {:reason :unknown-action})
-    :assembly (let [refs (keep #(get-in t [% :connection/template]) [:template/start :template/end])]
-                (when-not (every? #(= :connection (get-in m [:templates % :template/kind])) refs)
-                  {:reason :unknown-connection-template}))
+    :assembly (when-not (every? #(condition-ok? m (get t %)) [:template/start :template/end])
+                {:reason :unknown-connection-template})
     {:reason :bad-kind}))
+
+(def thumbnail-limit
+  "Most characters a template's preview thumbnail (a PNG data URL) may take."
+  200000)
+
+(defn- thumbnail-error [{th :template/thumbnail}]
+  (when (and (some? th)
+             (not (and (string? th) (re-find #"^data:image/(png|jpeg|webp);base64," th)
+                       (<= (count th) thumbnail-limit))))
+    {:reason :bad-thumbnail}))
 
 (defmethod plan* :template/save [m {t :template new-id :new-id}]
   (let [new-id (or new-id random-uuid)
@@ -261,17 +291,27 @@
     (if-let [e (or (when-not (map? t) {:reason :not-a-map})
                    ;; an id the browser sends must be one of this project's templates
                    (when (and given (not (contains? (:templates m) given))) {:reason :unknown-template})
-                   (template-error m t))]
+                   (template-error m t)
+                   (thumbnail-error t))]
       (error :edit/bad-template :reason (:reason e))
-      (let [m' (assoc-in m [:templates id] t)]
-        (case (:template/kind t)
-          ;; an assembly template re-applies wherever it is used
-          :assembly (template-result->plan (template/reapply m' t new-id) [[:template id]])
-          ;; a connection template regenerates the members that own one
-          :connection {:model m'
-                       :changed (set (keep #(when (= id (:connection/template %)) (:connection/owner %))
-                                           (vals (:connections m'))))
-                       :writes [[:template id]]})))))
+      ;; the library only: assemblies and connections hold their own copies,
+      ;; so nothing in the model changes
+      {:model (assoc-in m [:templates id] t)
+       :changed #{}
+       :writes [[:template id]]})))
+
+(defmethod plan* :connection/update [m {cid :connection/id owner :xline/id copy :connection}]
+  (let [c (get-in m [:connections cid])]
+    (cond
+      (nil? c) (error :edit/unknown-connection :connection/id cid)
+      ;; the browser names the owner it is editing; it must be this one's
+      (not= owner (:connection/owner c)) (error :edit/not-the-owner :connection/id cid :xline/id owner)
+      (not (map? copy)) (error :edit/bad-connection :reason :not-a-map)
+      :else
+      (if-let [e (copy-error copy)]
+        (error :edit/bad-connection :reason (:reason e))
+        (let [{m' :model :keys [changed]} (template/update-connection m cid copy)]
+          {:model m' :changed changed :writes [[:connection cid]]})))))
 
 (defn plan
   "Validate and apply one source edit. {:model :changed :writes} or {:error}."

@@ -74,10 +74,12 @@
         p (nav/properties view b2 page names)]
     (is (= {:mark "B2" :role :beam :role-label "Beam" :size "310UB40.4" :level "L1"}
            (select-keys p [:mark :role :role-label :size :level])))
-    (is (= {:kind :template :name "Beam, end plates both ends"} (dissoc (:template p) :id)))
+    (is (= {:kind :from :name "Beam, end plates both ends"} (dissoc (:template p) :id)))
     (is (== 8000 (Math/round (double (:length p)))))
-    (testing "each end: its connection template and what it sits on"
-      (is (= "End plate, 4 bolts" (get-in p [:ends :start :template-name])))
+    (testing "each end: its own connection, where it came from and what it sits on"
+      (is (= "End plate, 4 bolts" (get-in p [:ends :start :name])))
+      (is (= "End plate, 4 bolts" (get-in p [:ends :start :from :name])))
+      (is (some? (get-in p [:ends :start :connection-id])))
       (is (= {:assembly/mark "C2" :size "200UC46.2" :xline/role :column} (get-in p [:ends :start :support])))
       (is (= "C4" (get-in p [:ends :end :support :assembly/mark]))))
     (testing "parts: the main member, then each end's plate and bolts"
@@ -90,7 +92,8 @@
         (is (= {:kind :none} (:template p)))
         (is (nil? (:ends p)))
         (is (= [[:main "310UB40.4"]] (map (juxt :kind :size) (:parts p))))))
-    (testing "edited by hand"
-      (let [v (assoc-in view [:xlines b1 :assembly/from-template] (get-in m [:xlines b2 :assembly/template]))]
-        (is (= :edited (get-in (nav/properties v b1 nil names) [:template :kind])))))
+    (testing "an older record's bare template id still names where it came from"
+      (let [tid (get-in m [:xlines b2 :assembly/from-template :template/id])
+            v (assoc-in view [:xlines b1 :assembly/template] tid)]
+        (is (= {:kind :from :id tid :name "Beam, end plates both ends"} (:template (nav/properties v b1 nil names))))))
     (is (nil? (nav/properties view :nope nil names)))))
