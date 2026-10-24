@@ -21,7 +21,7 @@
 ;; --- display modes -------------------------------------------------------------
 
 (defn- apply-display! []
-  (let [{:keys [^js model-root display suppressed? show-xlines?]} @vp*
+  (let [{:keys [^js model-root display suppressed? show-xlines? show-cut-planes?]} @vp*
         mode (if (and suppressed? (= :hidden-line display)) :shaded display)]
     (when model-root
       (.traverse model-root
@@ -32,10 +32,12 @@
                      "visible-edge" (set! (.-visible node) true)
                      "hidden-edge" (set! (.-visible node) (= :hidden-line mode))
                      "xline" (set! (.-visible node) show-xlines?)
+                     "cut-plane" (set! (.-visible node) (and show-cut-planes? (not= :wireframe mode)))
                      nil))))))
 
 (defn set-display! [mode] (swap! vp* assoc :display mode) (apply-display!))
 (defn show-xlines! [on?] (swap! vp* assoc :show-xlines? on?) (apply-display!))
+(defn show-cut-planes! [on?] (swap! vp* assoc :show-cut-planes? on?) (apply-display!))
 (defn refresh-display! [] (apply-display!))
 
 ;; Orbiting in hidden-line mode is slow to read; show shaded while the view
@@ -335,7 +337,7 @@
       (orbit/install! (.-domElement renderer) camera controls (fn [] model-root))
       (reset! vp* {:el el :renderer renderer :scene scene :camera camera :controls controls
                    :model-root model-root :grid-root grid-root :overlay-root overlay-root
-                   :display :hidden-line :show-xlines? true :on-frame on-frame}))
+                   :display :hidden-line :show-xlines? true :show-cut-planes? false :on-frame on-frame}))
     (.addEventListener (.-domElement renderer) "contextmenu" #(.preventDefault %))
     (.observe (js/ResizeObserver. resize!) el)
     (resize!)

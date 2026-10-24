@@ -283,7 +283,8 @@
         n (get f (get cut-planes (get-in prim [:prim/params :plane]) :z))
         plane {:origin (v/v+ (:o f) (v/scale n (param ctx :gap 0))) :normal n}]
     (if (get-in st [:parts id])
-      (update-in st [:parts id] rewrap instr/slice plane :positive)
+      ;; tagged with the prim, so an editor can pick out its cut plane
+      (update-in st [:parts id] rewrap #(assoc (instr/slice % plane :positive) :cut/prim (:prim/id prim)))
       (missing st prim :target))))
 
 (defn- shape

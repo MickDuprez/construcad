@@ -9,16 +9,28 @@
   Solids are built as plain triangle soup (non-indexed, position only), so
   :slice can cut them (construcad.app.slice); :subtract :union :intersect go
   through three-bvh-csg. Every object carries a userData.renderRole the
-  display modes switch on."
+  display modes switch on.
+
+  Each plane cut (:slice) is also drawn as a translucent cut plane a little
+  bigger than the solid's section there (construcad.cut-plane), role
+  \"cut-plane\": not a face, so never picked or orbited about, and drawn
+  by no edge pass."
   (:require ["three" :as THREE]
             ["three-bvh-csg" :refer [Brush Evaluator SUBTRACTION ADDITION INTERSECTION]]
             [construcad.app.slice :as slice]
+            [construcad.cut-plane :as cut-plane]
             [construcad.edges :as edges]
             [modeller.frame :as frame]
             [modeller.profile :as profile]))
 
 (def colours
   {:face 0xc3ccd3 :edge 0x1f2a33 :hidden 0x5d6f7b :xline 0x0b8a96})
+
+(def cut-plane-styles
+  "Fill colour and opacity, and outline colour, of a cut plane by emphasis."
+  {:normal {:fill 0xff8a00 :opacity 0.35 :line 0xe07000}
+   :strong {:fill 0xff6a00 :opacity 0.6 :line 0xc04a00}
+   :light {:fill 0xffb766 :opacity 0.18 :line 0xf0a860}})
 
 ;; --- solids as triangle soup ---------------------------------------------------
 
@@ -51,6 +63,30 @@
   (.fromArray (THREE/Matrix4.) (clj->js (frame/->matrix f))))
 
 (declare ^js solid-geometry)
+
+(def ^:dynamic ^:private *cuts*
+  "While a solid is built for display: a JS array the slices push their cut
+  quads onto ({:corners :prim}, in the solid's space). nil otherwise."
+  nil)
+
+(defn- record-cut! [^js target {:keys [plane] :as instr}]
+  (when *cuts*
+    (let [points (cut-plane/section-points (js/Array.from (.. target -attributes -position -array)) plane)]
+      (when-let [q (cut-plane/quad plane points)]
+        (.push *cuts* {:corners (:corners q) :prim (:cut/prim instr)})))))
+
+(defn- transform-cuts
+  "Cut quads recorded by `build` (a thunk), moved by `matrix`, onto *cuts*."
+  [^js matrix build]
+  (if-not *cuts*
+    (build)
+    (let [inner #js []
+          result (binding [*cuts* inner] (build))]
+      (doseq [c (array-seq inner)]
+        (.push *cuts* (update c :corners (fn [ps] (mapv #(let [^js p (.applyMatrix4 (THREE/Vector3. (% 0) (% 1) (% 2)) matrix)]
+                                                           [(.-x p) (.-y p) (.-z p)])
+                                                        ps)))))
+      result)))
 
 (defonce ^:private evaluator
   (delay (doto (Evaluator.)
@@ -85,9 +121,13 @@
     :cylinder (soup (-> (THREE/CylinderGeometry. (:radius instr) (:radius instr) (:length instr) 32)
                         (.rotateX (/ js/Math.PI 2))
                         (.translate 0 0 (/ (:length instr) 2))))
-    :transform (let [^js g (solid-geometry (:child instr))] (.applyMatrix4 g (frame-matrix (:frame instr))))
+    :transform (let [m (frame-matrix (:frame instr))
+                     ^js g (transform-cuts m #(solid-geometry (:child instr)))]
+                 (.applyMatrix4 g m))
     :group (merge-soup (keep #(when (not= :xline (:op %)) (solid-geometry %)) (:children instr)))
-    :slice (slice/slice (solid-geometry (:target instr)) (:plane instr) (:keep instr))
+    :slice (let [^js target (solid-geometry (:target instr))]
+             (record-cut! target instr)
+             (slice/slice target (:plane instr) (:keep instr)))
     :subtract (csg instr SUBTRACTION (map solid-geometry (cons (:target instr) (:tools instr))))
     :union (csg instr ADDITION (map solid-geometry (:solids instr)))
     :intersect (csg instr INTERSECTION (map solid-geometry (:solids instr)))))
@@ -102,8 +142,47 @@
     (doto (THREE/BufferGeometry.)
       (.setAttribute "position" (THREE/Float32BufferAttribute. segs 3)))))
 
+(defn- cut-plane-object
+  "A translucent quad with a thin outline for one recorded cut."
+  [{:keys [corners prim]}]
+  (let [[a b c d] corners
+        {:keys [fill opacity line]} (:normal cut-plane-styles)
+        quad (doto (THREE/BufferGeometry.)
+               (.setAttribute "position" (THREE/Float32BufferAttribute. (clj->js (concat a b c a c d)) 3)))
+        mesh (THREE/Mesh. quad (THREE/MeshBasicMaterial.
+                                #js {:color fill :transparent true :opacity opacity
+                                     :side THREE/DoubleSide :depthWrite false}))
+        outline (THREE/LineLoop. (.setFromPoints (THREE/BufferGeometry.)
+                                                 (into-array (map (fn [[x y z]] (THREE/Vector3. x y z)) corners)))
+                                 (THREE/LineBasicMaterial. #js {:color line}))
+        group (THREE/Group.)]
+    (doseq [^js o [group mesh outline]]
+      (set! (.-userData o) #js {:renderRole "cut-plane" :cutPrim (some-> prim name)}))
+    (set! (.-renderOrder mesh) 3)
+    (.add group mesh outline)
+    group))
+
+(defn emphasise-cut-plane!
+  "Restyle a cut plane object (the group) to :normal, :strong or :light."
+  [^js o emphasis]
+  (let [{:keys [fill opacity line]} (get cut-plane-styles emphasis)]
+    (doseq [^js n (array-seq (.-children o))]
+      (if (.-isMesh n)
+        (do (.setHex (.. n -material -color) fill) (set! (.. n -material -opacity) opacity))
+        (.setHex (.. n -material -color) line)))))
+
+(defn cut-planes
+  "Every cut plane object under `root`."
+  [^js root]
+  (let [out #js []]
+    (.traverse root (fn [^js n]
+                      (when (and (= "cut-plane" (.. n -userData -renderRole)) (.-isGroup n))
+                        (.push out n))))
+    (array-seq out)))
+
 (defn- solid-object [instr]
-  (let [geometry (doto (solid-geometry instr) (.computeVertexNormals))
+  (let [cuts #js []
+        geometry (doto (binding [*cuts* cuts] (solid-geometry instr)) (.computeVertexNormals))
         group (THREE/Group.)
         face (THREE/Mesh. geometry
                           (THREE/MeshStandardMaterial.
@@ -125,6 +204,7 @@
     (set! (.-renderOrder hidden) 2)
     (.computeLineDistances hidden)
     (.add group face edges hidden)
+    (doseq [c (array-seq cuts)] (.add group (cut-plane-object c)))
     group))
 
 (defn- xline-object [{:keys [length]}]

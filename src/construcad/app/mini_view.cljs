@@ -76,6 +76,16 @@
                        (.setHex (.. n -material -color) highlight-colour)
                        (.setHex (.. n -material -emissive) 0x4a2400)))))))
 
+(defn- emphasise-cut!
+  "Pick out the cut plane of one cut prim in one assembly shown; lighten the rest."
+  [^js root {:keys [assembly prim]}]
+  (doseq [^js a (array-seq (.-children root))
+          :let [mine? (= (str assembly) (gobj/get (.-userData a) "assemblyId"))]
+          ^js o (reader/cut-planes a)]
+    (reader/emphasise-cut-plane! o (if (and mine? (= (name prim) (gobj/get (.-userData o) "cutPrim")))
+                                     :strong
+                                     :light))))
+
 (defn- axes-marker
   "An ECS as red, green and blue X, Y and Z axes of `size`, drawn through the solids."
   [f size]
@@ -90,8 +100,10 @@
   "Replace what the view shows with these instructions ({id instr}), and a
   marker at each of `nodes` (XLine nodes, [x y z]). `highlight` colours one
   part ({:assembly id :part id}); each of `axes` (frames) is drawn as an
-  ECS. Fits the view the first time, or when `fit?`."
-  [view instructions & {:keys [fit? nodes highlight axes]}]
+  ECS. Cut planes show; with `cut` ({:assembly id :prim id}) that cut's
+  plane is picked out and the others' lighter. Fits the view the first
+  time, or when `fit?`."
+  [view instructions & {:keys [fit? nodes highlight axes cut]}]
   (let [{:keys [^js root shown?]} @view]
     (doseq [^js o (vec (array-seq (.-children root)))] (reader/dispose! o))
     (doseq [[id instr] instructions]
@@ -105,6 +117,7 @@
             r (max 12 (* 0.008 span))]
         (doseq [p nodes] (.add root (node-marker p r)))))
     (when highlight (highlight! root highlight))
+    (when cut (emphasise-cut! root cut))
     (doseq [f axes] (.add root (axes-marker f 160)))
     (when (or fit? (not shown?))
       (look! view (:dir @view))
@@ -167,7 +180,10 @@
         saved {:position (.clone (.-position camera)) :target (.clone (.-target controls))
                :zoom (.-zoom camera) :near (.-near camera) :far (.-far camera)
                :frustum [(.-left camera) (.-right camera) (.-top camera) (.-bottom camera)]}
-        ^js src (.-domElement renderer)]
+        ^js src (.-domElement renderer)
+        ;; thumbnails show the parts, not the cut planes
+        planes (filter #(.-visible ^js %) (reader/cut-planes (:root @view)))]
+    (doseq [^js o planes] (set! (.-visible o) false))
     (.setSize renderer (* 2 w) (* 2 h) false)
     (look! view [(.-x eye) (.-y eye) (.-z eye)] :aspect (/ w h))
     (.render renderer scene camera)
@@ -177,6 +193,7 @@
           ^js g (.getContext out "2d")]
       (set! (.-imageSmoothingQuality g) "high")
       (.drawImage g src 0 0 w h)
+      (doseq [^js o planes] (set! (.-visible o) true))
       ;; back as it was
       (.setSize renderer vw vh false)
       (let [[l r t b] (:frustum saved)]

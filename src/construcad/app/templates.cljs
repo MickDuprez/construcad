@@ -672,6 +672,7 @@
                 (apply show-preview! instructions
                        :highlight (when-let [p (get-in detail [:outputs selected])] {:assembly owner-id :part p})
                        :axes (when-let [f (get-in detail [:frames selected])] [f])
+                       :cut (when (= :cut (:prim/type (prim/find-prim parts selected))) {:assembly owner-id :prim selected})
                        opts))
         prim-errors (filter :prim/id errors)
         other-errors (remove #(or (:param %) (:prim/id %)) errors)

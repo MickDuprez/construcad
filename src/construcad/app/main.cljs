@@ -584,6 +584,10 @@
              (h :input {:type "checkbox" :checked (:show-xlines? @vp/vp*)
                         :on-change #(vp/show-xlines! (.. % -target -checked))})
              " XLines")
+          (h :label {:title "Show each cut as a coloured plane"}
+             (h :input {:type "checkbox" :checked (:show-cut-planes? @vp/vp*)
+                        :on-change #(vp/show-cut-planes! (.. % -target -checked))})
+             " Cut planes")
           (h :button {:on-click vp/zoom-extents!} "Zoom extents"))
        (h :div {:class "tool-group"}
           (h :button {:class (when (= :levels popover) "on") :on-click #(toggle-popover! :levels)} "Levels & grid")
