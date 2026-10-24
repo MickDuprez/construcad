@@ -62,11 +62,36 @@
     (set! (.-renderOrder o) 11)
     o))
 
+(def highlight-colour 0xf0a33c)
+
+(defn- highlight!
+  "Colour one part of one assembly shown: `part` (a part id) inside the
+  object for `assembly` (an assembly id)."
+  [^js root {:keys [assembly part]}]
+  (doseq [^js a (array-seq (.-children root))
+          :when (= (str assembly) (gobj/get (.-userData a) "assemblyId"))]
+    (when-let [^js o (.getObjectByName a (reader/part-name part))]
+      (.traverse o (fn [^js n]
+                     (when (= "face" (gobj/get (.-userData n) "renderRole"))
+                       (.setHex (.. n -material -color) highlight-colour)
+                       (.setHex (.. n -material -emissive) 0x4a2400)))))))
+
+(defn- axes-marker
+  "An ECS as red, green and blue X, Y and Z axes of `size`, drawn through the solids."
+  [f size]
+  (let [o (THREE/AxesHelper. size)]
+    (set! (.. o -material -depthTest) false)
+    (set! (.. o -material -transparent) true)
+    (set! (.-renderOrder o) 12)
+    (.applyMatrix4 o (reader/frame-matrix f))
+    o))
+
 (defn show!
   "Replace what the view shows with these instructions ({id instr}), and a
-  marker at each of `nodes` (XLine nodes, [x y z]). Fits the view the first
-  time, or when `fit?`."
-  [view instructions & {:keys [fit? nodes]}]
+  marker at each of `nodes` (XLine nodes, [x y z]). `highlight` colours one
+  part ({:assembly id :part id}); each of `axes` (frames) is drawn as an
+  ECS. Fits the view the first time, or when `fit?`."
+  [view instructions & {:keys [fit? nodes highlight axes]}]
   (let [{:keys [^js root shown?]} @view]
     (doseq [^js o (vec (array-seq (.-children root)))] (reader/dispose! o))
     (doseq [[id instr] instructions]
@@ -79,6 +104,8 @@
       (let [span (reduce max 0 (for [a nodes b nodes] (js/Math.hypot (- (a 0) (b 0)) (- (a 1) (b 1)) (- (a 2) (b 2)))))
             r (max 12 (* 0.008 span))]
         (doseq [p nodes] (.add root (node-marker p r)))))
+    (when highlight (highlight! root highlight))
+    (doseq [f axes] (.add root (axes-marker f 160)))
     (when (or fit? (not shown?))
       (look! view (:dir @view))
       (swap! view assoc :shown? true))))

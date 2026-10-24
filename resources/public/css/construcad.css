@@ -189,9 +189,53 @@ table.params input.pname { width: 120px; }
 table.params input.formula { font: 12px ui-monospace, monospace; color: #3b4f9a; }
 table.params tr.overridden td:first-child { font-weight: 600; color: var(--accent); }
 table.params tr.bad input { border-color: var(--warn); }
-ol.actions { margin: 0; padding-left: 20px; }
-ol.actions li { margin: 4px 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
-.action-head { display: flex; align-items: center; gap: 6px; }
+/* connection editor: parameters and the parts tree on the left, the selected
+   part's editor in the middle, the preview on the right */
+.dialog-body.conn-layout { display: grid; gap: 10px 18px; align-items: start;
+  grid-template-columns: minmax(190px, 240px) minmax(300px, 1fr) minmax(360px, 1.15fr);
+  grid-template-areas: "params params preview" "tree editor preview"; }
+.conn-layout .params-area { grid-area: params; min-width: 0; }
+.conn-layout .tree-area { grid-area: tree; min-width: 0; }
+.conn-layout .editor-area { grid-area: editor; min-width: 0; }
+.conn-layout .preview-area { grid-area: preview; min-width: 0; display: flex; flex-direction: column; position: sticky; top: 0; }
+.conn-layout .preview-area .mini-view { flex: none; height: 460px; min-height: 0; }
+@media (max-width: 1100px) {
+  .dialog-body.conn-layout { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+    grid-template-areas: "params params" "tree editor" "preview preview"; }
+  .conn-layout .preview-area { position: static; }
+}
+@media (max-width: 700px) {
+  .dialog-body.conn-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "params" "tree" "editor" "preview"; }
+}
+ul.parts-tree { list-style: none; margin: 4px 0 6px; padding: 0; border: 1px solid var(--line); border-radius: 4px; }
+ul.parts-tree li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; user-select: none;
+  border-bottom: 1px solid var(--line); min-width: 0; }
+ul.parts-tree li:last-child { border-bottom: 0; }
+ul.parts-tree li:hover { background: #eef2f4; }
+ul.parts-tree li.selected { background: var(--accent-soft); }
+ul.parts-tree li.bad .prim-name { color: var(--warn); }
+ul.parts-tree .prim-icon { width: 16px; flex: none; text-align: center; color: var(--accent); font-weight: 700; }
+ul.parts-tree .prim-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.add-parts { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
+.add-parts .label { width: 100%; color: var(--muted); font-size: 12px; }
+.prim-editor section { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px 8px; margin-bottom: 10px; }
+.prim-editor input.val { width: 110px; }
+.prim-editor input.val.formula, .prim-editor input.val.name { font: 12px ui-monospace, monospace; color: #3b4f9a; }
+.prim-editor input.val.wide { width: 100%; }
+.prim-editor .triple { display: flex; gap: 4px; }
+.prim-editor .triple input.val { width: 76px; }
+.prim-editor label.check { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
+.prim-editor input.name-field { width: 100%; font-size: 14px; }
+/* the library picker */
+.dialog.tpl-picker { width: min(900px, 100%); }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; padding-top: 10px; }
+.pick-card { display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left; padding: 8px;
+  font: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.pick-card:hover { border-color: var(--accent); }
+.pick-card.current { outline: 2px solid var(--accent); }
+.pick-card img.thumb { max-width: none; }
+.thumb.blank { display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 3 / 2;
+  background: #eef2f4; color: var(--muted); border-radius: 4px; }
 code { font: 12px ui-monospace, monospace; background: #eef2f4; padding: 0 3px; border-radius: 3px; }
 
 /* assembly page */

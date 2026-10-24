@@ -125,7 +125,6 @@
     (set! (.-renderOrder hidden) 2)
     (.computeLineDistances hidden)
     (.add group face edges hidden)
-    (when-let [id (:id instr)] (set! (.-name group) (name id)))
     group))
 
 (defn- xline-object [{:keys [length]}]
@@ -137,18 +136,25 @@
     (set! (.-renderOrder line) 10)
     line))
 
+(defn part-name
+  "The three.js name of the object for a part id: :end/plate is \"end/plate\"."
+  [id]
+  (subs (str id) 1))
+
 (defn realise
-  "A three.js object for any instruction."
+  "A three.js object for any instruction, named after its :id when it has one."
   [{:keys [op] :as instr}]
-  (case op
-    :transform (doto (THREE/Group.)
-                 (.applyMatrix4 (frame-matrix (:frame instr)))
-                 (.add (realise (:child instr))))
-    :group (let [g (THREE/Group.)]
-             (doseq [c (:children instr)] (.add g (realise c)))
-             g)
-    :xline (xline-object instr)
-    (solid-object instr)))
+  (let [^js o (case op
+                :transform (doto (THREE/Group.)
+                             (.applyMatrix4 (frame-matrix (:frame instr)))
+                             (.add (realise (:child instr))))
+                :group (let [g (THREE/Group.)]
+                         (doseq [c (:children instr)] (.add g (realise c)))
+                         g)
+                :xline (xline-object instr)
+                (solid-object instr))]
+    (when (keyword? (:id instr)) (set! (.-name o) (part-name (:id instr))))
+    o))
 
 (defn assembly-object
   "The root object for one assembly's instruction, tagged with its id."
