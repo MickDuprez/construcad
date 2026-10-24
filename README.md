@@ -74,17 +74,60 @@ An **assembly template** is a recipe for an XLine-rooted member: how the main
 member sits on its XLine (which of the nine insertion points, an X/Y offset,
 a rotation, start and end extensions) and a connection template for each end.
 The section size is chosen when the template is applied. A **connection
-template** is an ordered list of actions (`:cut-to-face`, `:end-plate`,
-`:bolt-group`) and parameters; a parameter is a number or a formula over the
-member's section data (`d bf tf tw r1` ...), `support` (the supporting
-member's data, e.g. `(:tf support)`) and the other numeric parameters, e.g.
-`:plate-h "(+ d 20)"`. A new project starts with a small library (square cut,
-end plate with four bolts, and beams and a column built from them).
+template** is built from simple parts (primitives) and parameters; a
+parameter is a number or a formula over the member's section data (`d bf tf
+tw r1` ...), `support` (the supporting member's data, e.g. `(:tf support)`)
+and the other numeric parameters, e.g. `:plate-h "(+ d 20)"`. A new project
+starts with a small library (square cut, end plate with four bolts, and beams
+and a column built from them).
+
+### Connections from primitives
+
+A connection is a tree of parts (`modeller.prim`, evaluated by
+`modeller.connection`): an end plate is a cut behind the plate, a plate on the
+support face, and a hole group under the plate drilling it and the support,
+with bolts; gussets, snipes and more holes are just more parts.
+
+    {:connection/name "End plate, 4 bolts"
+     :connection/params {:gap 0 :plate-t 12 :plate-h "(+ d 20)" ...}
+     :connection/parts
+     [{:prim/id :cut :prim/type :cut
+       :prim/place {:at :support-face :offset [0 0 "(+ gap plate-t)"]}}
+      {:prim/id :plate :prim/type :plate
+       :prim/place {:at :support-face :offset [0 0 :gap]}
+       :prim/params {:t :plate-t :shape {:rect [:plate-w :plate-h]}}
+       :prim/children [{:prim/id :bolts :prim/type :hole-group
+                        :prim/params {:rows :rows :cols :cols :through [:parent :support]
+                                      :bolts? true}}]}]}
+
+Every part has the same **placement**: an anchor ECS, then an offset in it,
+a rotation about its Z and a flip (a half turn about X), in that order. A
+value anywhere is a number, a parameter's name or a formula.
+
+| Anchor | Origin | Axes |
+|---|---|---|
+| `:node` | the connection's node on the member's XLine | Z along the XLine into the member, Y the XLine's Y, X = Y × Z (at the end node X is the XLine's −X, so details come out the same way up at both ends) |
+| `:support-face` (`:face :auto` or a name) | where the member's section centre line meets that face of the support | Z the face normal, out of the support towards the member; Y the XLine's Y made square to it |
+| `:owner-face` (`:face`, default `:web-right`) | the member's own face, at the node | Z the face's outward normal; Y the XLine's Y (along the XLine on a top or bottom face) |
+| `:parent` (a child's default) | the parent part's ECS: a plate's or gusset's profile, XY in its plane, Z through its thickness | |
+
+Faces are named in the section's own XY: `:top :bottom :left :right` and, for
+an I section, `:web-left :web-right :flange-top-inner :flange-bottom-inner`.
+
+| Type | What it does |
+|---|---|
+| `:cut` | slices `:target` (the member, or `:parent`) with its ECS's `:plane` (`:xy`, `:xz`, `:yz`), pushed out by `:gap`, keeping the side the plane's normal points to |
+| `:plate` | `:shape {:rect [w h]}` (centred, default bf × d) or `{:polygon [[x y] ...]}`, `:t` thick along +Z; a part `:end/<id>` |
+| `:gusset` | a triangle (`:w` along X, `:h` along Z, or a polygon) standing on its ECS's XY plane, `:t` centred on it |
+| `:hole-group` | `:rows` × `:cols` holes at `:pitch`/`:gauge`, `:dia` (bolt + 2), along Z through `:through` (`:parent`, `:support`, `:owner-main`), overrunning each face by `:overrun`; with `:bolts?` a bolt group (`:bolt-dia`, `:bolt-length` default what it passes through + 30). The support's holes are drilled in its own assembly |
+
+Types are a multimethod (`modeller.connection/apply-prim`), so new ones plug in.
+Output parts are named by end and part id (`:start/plate`, `:end/bolts`).
 
 **Templates are starting points, copied and never linked.** Applying an
 assembly template copies its placement into the assembly, and each end's
-connection template into that end's connection: its own name, actions and
-parameters (`:connection/name`, `:connection/actions`, `:connection/params`).
+connection template into that end's connection: its own name, parts and
+parameters (`:connection/name`, `:connection/parts`, `:connection/params`).
 Both note where they came from (`:assembly/from-template`,
 `:connection/from-template`: the template's id and name), and nothing more.
 So saving a library template changes no assembly, and editing an assembly's
@@ -110,8 +153,9 @@ which copies the template as it is now.
   narrow window.
 - **Template mode** (from the Templates panel) edits an assembly template on
   a virtual sample member, its ends made against sample columns (not drawn).
-  An end card picks a library connection template (or none); **Edit
-  connection…** opens that template in the library. `:template/role`
+  An end card's **Change connection…** picks a library connection template
+  (or none) from a picker with thumbnails; **Edit connection…** opens that
+  template in the library. `:template/role`
   ("Usually for") only orders the size pickers: applying a template never
   changes a member's role, which is chosen when it is drawn.
 - **Instance mode** (**Edit assembly**, double-click in the tree or
@@ -125,13 +169,19 @@ which copies the template as it is now.
   connections, and the connections other members bolt into it, which drill
   its holes), still drawn alone. Each end card says what the end sits on;
   **Edit connection…** opens the connection editor in instance mode, and
-  **Replace with…** swaps the end for a fresh copy of a library connection
-  template. **Save** sends `:assembly/update` (and `:xline/set-rotation` if
+  **Change connection…** opens the picker: the template picked opens in the
+  connection editor as a fresh copy, which its **Save** makes this end's own
+  (`:connection/update`); None leaves the end plain when the page is saved. **Save** sends `:assembly/update` (and `:xline/set-rotation` if
   that changed). **Re-apply from library…** applies a template (the one it
   came from first) at a size to this member again.
-- The **connection editor** orders the actions (add, ↑ ↓, remove), edits the
-  parameters (a formula's error shows on its row) and previews the
-  connection. A connection template knows nothing of member roles, only the
+- The **connection editor** edits the parameters at the top (a formula's
+  error shows on its row), the connection's **parts tree** on the left (add
+  Cut / Plate / Gusset / Hole group to the connection or under the selected
+  part, ↑ ↓ among its siblings, remove), and the selected part on the right:
+  its name, the **Placement** every type shares (anchor and face, offset X Y
+  Z, rotation with 0/90/180/270 or typed, flip), then its type's own fields.
+  The preview updates as you type, the selected part in orange with its ECS
+  (X red, Y green, Z blue); errors name the part they come from. A connection template knows nothing of member roles, only the
   two ECSs it joins and how (cut, plate, bolts...), so one template serves a
   beam into a column and a joist into a beam.
   - **Library mode** (from the Templates panel or an assembly template's end)
@@ -148,7 +198,8 @@ which copies the template as it is now.
     from. **Save** sends `:connection/update`, which regenerates the member
     and what it bolts into; **Save as new library template** puts a copy in
     the library (with a thumbnail of the real connection), and the
-    connection then notes it came from there once it is saved.
+    connection then notes it came from there once it is saved. **Change
+    connection…** swaps the draft for a copy of another library template.
 - Previews regenerate in the browser with `modeller.core` and the in-browser
   section library (`construcad.template-edit`), so nothing goes to the server
   until **Save**.
@@ -157,6 +208,14 @@ which copies the template as it is now.
   and **Apply** (`:assembly/apply-template`). The supporting member of each
   end is read from the end node; an end that isn't on another XLine gets no
   connection, and the status bar says so.
+
+Connections and connection templates saved as flat action lists
+(`:connection/actions`, `:template/actions`: `:cut-to-face`, `:end-plate`,
+`:bolt-group`) are read as the equivalent tree (`modeller.prim/actions->parts`,
+which gives B2 the same geometry as before, tested) and saved as trees the
+next time they are saved. One difference: an old `:plate-dx`/`:plate-dy` at
+an end connection now follows the new ECS, whose X and Y point the same way
+at both ends (Y up), where the old plate's Y pointed down at the end.
 
 Records from before templates were copied still load: a connection with a
 `:connection/template` id and no actions of its own is built through that
@@ -204,7 +263,10 @@ viewer over a websocket. The browser never sends geometry.
 | `modeller.shapes` | standard shape builders: rect, I, channel, angle, RHS/SHS, CHS |
 | `modeller.sections-au` | 120 AU hot rolled sections from the ASI 8th edition tables (UB, UC, UBP, PFC, EA, UA), plus placeholder hollow sections |
 | `modeller.instr` | the reader instruction algebra |
-| `modeller.assembly` | parts to instructions, connection actions (`:cut-to-face`, `:end-plate`, `:bolt-group`) from each connection's own recipe |
+| `modeller.part` | one part: its frame, outline and instruction |
+| `modeller.prim` | connections as trees of primitives: walking and editing them, checking them, reading old action lists as trees |
+| `modeller.connection` | evaluating a connection's tree: anchors (ECS), values, the prim types (`:cut`, `:plate`, `:gusset`, `:hole-group`) |
+| `modeller.assembly` | an assembly's instruction: its parts, each connection's own recipe evaluated on it, and the holes others drill in it |
 | `modeller.params` | template parameters: numbers or SCI formulas over section data |
 | `modeller.template` | templates: copy an assembly template onto an XLine at a size, connection copies and provenance, one connection's update |
 | `modeller.core` | `regenerate` and `edit` entry points |
