@@ -57,7 +57,11 @@
 
   Output parts are named by the end and the prim's id: :end/plate,
   :start/bolts. Values are numbers, parameter names or formulas over the
-  owner's section data, `support` and the resolved parameters."
+  owner's section data, `support`, `settings` and the resolved parameters.
+  A blank field takes the project's detailing setting it inherits (the
+  model's :settings, modeller.settings: gauge, pitch, bolt diameter, plate
+  thickness...), else the default above; a name is looked up in the
+  connection's parameters, then the settings."
   (:require [clojure.string :as str]
             [modeller.frame :as frame]
             [modeller.instr :as instr]
@@ -65,6 +69,7 @@
             [modeller.part :as part]
             [modeller.prim :as prim]
             [modeller.profile :as profile]
+            [modeller.settings :as settings]
             [modeller.vec :as v]))
 
 ;; --- faces -------------------------------------------------------------------------
@@ -115,7 +120,8 @@
         support-outline (when support-main (:outline (part/part-outline model support-main)))
         support-data (when support-main (part/section-data model support-main))
         main-frame (when owner-outline (part/part-frame main owner-outline))
-        {:keys [params errors]} (params/resolve-params (:connection/params recipe) owner-data support-data)]
+        eff (settings/effective (:settings model))
+        {:keys [params errors]} (params/resolve-params (:connection/params recipe) owner-data support-data eff)]
     {:model model
      :conn conn
      :end (:connection/end conn)
@@ -134,7 +140,8 @@
                                                                (part/part-frame support-main support-outline)))
                                 (section-faces support-outline support-data (part/section-builder model support-main))))
      :params params
-     :binds (params/bindings owner-data support-data (into {} (filter (comp number? val)) params))
+     :settings eff
+     :binds (params/bindings owner-data support-data (into {} (filter (comp number? val)) params) eff)
      :param-errors errors}))
 
 ;; --- values -------------------------------------------------------------------------
@@ -142,25 +149,26 @@
 (defn- error! [ctx e] (some-> (:errs ctx) (vswap! conj e)) nil)
 
 (defn value
-  "A prim's value as a number: a number, a parameter name (keyword or a
-  string naming one) or a formula. nil gives `default`; an error is
-  recorded and gives `default` (or 0)."
-  [ctx v default]
-  (let [fail (fn [e] (error! ctx e) (or default 0))]
-    (cond
-      (nil? v) default
-      (number? v) v
-      (keyword? v) (let [n (get (:params ctx) v)]
-                     (if (number? n) n (fail {:error/type :prim/unknown-param :param v})))
-      (string? v) (let [s (str/trim v)
-                        n (when (re-matches #"[a-zA-Z][a-zA-Z0-9-]*" s) (get (:params ctx) (keyword s)))]
-                    (if (number? n)
-                      n
-                      (let [{r :value e :error} (params/eval-formula s (:binds ctx))]
-                        (if e (fail e) r))))
-      :else (fail {:error/type :prim/bad-value :value v}))))
+  "A prim's value as a number: a number, a name (keyword or a string
+  naming one: a parameter, else a setting) or a formula. nil gives
+  `inherited` (what the field takes from settings), else `default`; an
+  error is recorded and gives `default` (or 0). The order is
+  modeller.settings/field-value's."
+  ([ctx v default] (value ctx v default nil))
+  ([ctx v default inherited]
+   (let [{r :value e :error} (settings/field-value v (assoc (select-keys ctx [:params :settings :binds])
+                                                            :default default :inherited inherited))]
+     (when e (error! ctx e))
+     r)))
 
-(defn- param [ctx k default] (value ctx (get-in ctx [:prim :prim/params k]) default))
+(defn- param
+  "A field of the prim being evaluated: its own value, else what it
+  inherits from settings (`opts` as modeller.settings/inherited's), else
+  `default`."
+  ([ctx k default] (param ctx k default {}))
+  ([ctx k default opts]
+   (value ctx (get-in ctx [:prim :prim/params k]) default
+          (settings/inherited (:settings ctx settings/defaults) (get-in ctx [:prim :prim/type]) k opts))))
 
 ;; --- anchors ------------------------------------------------------------------------
 
@@ -335,7 +343,7 @@
         rows (long (param ctx :rows 2)) cols (long (param ctx :cols 2))
         gauge (param ctx :gauge 90) pitch (param ctx :pitch 70)
         bolt (param ctx :bolt-dia 20)
-        dia (param ctx :dia (+ bolt 2))
+        dia (param ctx :dia (+ bolt 2) {:bolt bolt})
         over (param ctx :overrun 10)
         through (get-in prim [:prim/params :through] [:parent])
         slabs (keep #(slab ctx st % (:z f)) through)
@@ -367,7 +375,7 @@
           st
           (let [id (part-id ctx prim)
                 stack (reduce + (map :t slabs))
-                len (param ctx :bolt-length (+ stack 30))
+                len (param ctx :bolt-length (+ stack 30) {:stack stack})
                 ;; each bolt starts at the far face of what it passes through and runs back along -Z
                 bolts (for [c centres :let [top (reduce max 0 (map #(second (span c %)) slabs))]]
                         (instr/transform (-> (frame/translate f [(c 0) (c 1) top])

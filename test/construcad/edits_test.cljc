@@ -4,6 +4,7 @@
             [construcad.records :as records]
             [construcad.seed :as seed]
             [construcad.template-edit :as te]
+            [modeller.prim]
             [modeller.template]
             [modeller.library :as library]
             [modeller.sections-au :as au]
@@ -269,8 +270,10 @@
         b1 (by-mark m "B1") b2 (by-mark m "B2")
         c (some #(when (and (= b2 (:connection/owner %)) (= :end (:connection/end %))) %) (vals (:connections m)))
         column (first (:connection/refs c))
-        copy (assoc (select-keys c [:connection/name :connection/parts :connection/params])
-                    :connection/params (assoc (:connection/params c) :plate-t 20 :rows 3))
+        ;; the plate thickness is a shared parameter; the rows are the hole group's own
+        copy (-> (select-keys c [:connection/name :connection/parts :connection/params])
+                 (assoc :connection/params (assoc (:connection/params c) :plate-t 20))
+                 (update :connection/parts modeller.prim/update-prim :bolts assoc-in [:prim/params :rows] 3))
         p (edits/plan m {:edit/type :connection/update :connection/id (:connection/id c) :xline/id b2
                          :connection copy})
         patch (edits/patch m p)]
@@ -400,3 +403,48 @@
         (is (= :subtract (get-in real [:child :children 1 :op])))
         (is (= real (get instructions c2)))))))
 
+
+(deftest detailing-settings
+  (let [{m :model building :building} (seeded)
+        b1 (by-mark m "B1") b2 (by-mark m "B2")
+        columns (set (vals (get-in (edits/assembly-page m b2) [:state :supports])))
+        ids (let [n (atom 0)] #(keyword (str "settings-" (swap! n inc))))
+        p (edits/plan m {:edit/type :settings/update :settings {:gauge 100} :new-id ids})
+        patch (edits/patch m p)
+        bolt-x (fn [instr] (->> (get-in instr [:child :children])
+                                (some #(when (= :end/bolts (:id %)) %))
+                                :children (map #(get-in % [:frame :o 0])) set))]
+    (testing "a new project works with the defaults"
+      (is (= {} (:settings m)))
+      (is (= 90 (get-in (edits/settings-view m) [:settings :gauge]))))
+    (testing "changing the gauge regenerates B2, which inherits it, and the columns it bolts into; not B1"
+      (is (nil? (:error p)))
+      (is (= #{b2} (:changed p)))
+      (is (= (into #{b2} columns) (set (keys (:upsert patch)))))
+      (is (not (contains? (:upsert patch) b1)))
+      (is (not= (bolt-x (get-in (edits/view m [b2]) [:instructions b2])) (bolt-x (get-in patch [:upsert b2])))
+          "B2's bolts moved"))
+    (testing "the settings record: the project's own, created on first save"
+      (is (= [[:settings]] (:writes p)))
+      (is (= :settings-1 (get-in p [:model :settings-id])))
+      (let [[doc] (records/write-docs building (:model p) (:writes p) :project :proj)]
+        (is (= {:db/doc-type :settings :xt/id :settings-1 :settings/project :proj :settings/values {:gauge 100}} doc)))
+      (is (= {:gauge 100} (get-in patch [:settings :stored])) "the patch carries them to the editor")
+      (is (= 100 (get-in patch [:settings :settings :gauge]))))
+    (testing "nil puts one back to its default; a setting nothing inherits regenerates nothing"
+      (let [m' (:model p)]
+        (is (= {} (get-in (edits/plan m' {:edit/type :settings/update :settings {:gauge nil}}) [:model :settings])))
+        (is (= #{b2} (:changed (edits/plan m' {:edit/type :settings/update :settings {:gauge nil}}))))
+        (is (= #{} (:changed (edits/plan m' {:edit/type :settings/update :settings {:edge-distance 40}}))))
+        (is (= :settings-1 (get-in (edits/plan m' {:edit/type :settings/update :settings {:pitch 75}}) [:model :settings-id]))
+            "and keeps its record")))
+    (testing "a member whose hole groups set their own gauge doesn't regenerate"
+      (let [own (reduce (fn [m c] (update-in m [:connections (:connection/id c) :connection/parts]
+                                             modeller.prim/update-prim :bolts assoc-in [:prim/params :gauge] 90))
+                        m (filter #(= b2 (:connection/owner %)) (vals (:connections m))))]
+        (is (= #{} (:changed (edits/plan own {:edit/type :settings/update :settings {:gauge 100}}))))
+        (is (= #{b2} (:changed (edits/plan own {:edit/type :settings/update :settings {:bolt-dia 24}}))))))
+    (testing "refused: unknown settings, not numbers, negative"
+      (is (= :edit/bad-settings (get-in (edits/plan m {:edit/type :settings/update :settings {:nope 1}}) [:error :error/type])))
+      (is (= :not-a-number (get-in (edits/plan m {:edit/type :settings/update :settings {:gauge "x"}}) [:error :reason])))
+      (is (= :negative (get-in (edits/plan m {:edit/type :settings/update :settings {:gauge -5}}) [:error :reason]))))))

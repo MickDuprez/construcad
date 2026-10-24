@@ -62,6 +62,12 @@
               [:template/parts {:optional true} [:vector prim]]
               [:template/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]
               ;; a small PNG preview (data URL), captured when it is saved
-              [:template/thumbnail {:optional true} :string]]})
+              [:template/thumbnail {:optional true} :string]]
+   ;; a project's detailing settings: only what it changed from the
+   ;; defaults (modeller.settings), each a number
+   :settings [:map {:closed false}
+              [:xt/id :uuid]
+              [:settings/project :uuid]
+              [:settings/values [:map-of :keyword number?]]]})
 
 (def module {:schema schema})

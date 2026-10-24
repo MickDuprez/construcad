@@ -8,6 +8,8 @@
     :assembly   building id, level id + the XLine record with its parts
     :connection building id + the connection record (owner = assembly id)
     :template   project id + the template record
+    :settings   project id + its detailing settings (:settings/values, only
+                what the project changed from modeller.settings/defaults)
 
   Records keep the core's own keys, so a document minus :db/doc-type is the
   record the core reads. This namespace only maps between documents and the
@@ -36,6 +38,9 @@
 (defn template-doc [project t]
   (assoc t :db/doc-type :template :xt/id (:template/id t) :template/project project))
 
+(defn settings-doc [project id values]
+  {:db/doc-type :settings :xt/id id :settings/project project :settings/values (or values {})})
+
 (defn model-docs
   "Every document for a building's model map."
   [project building m]
@@ -48,19 +53,23 @@
 (defn docs->model
   "The model map regenerate takes, from a building's documents and the
   section library."
-  [{:keys [grid levels assemblies connections templates]} library]
+  [{:keys [grid levels assemblies connections templates settings]} library]
   (let [by-id (fn [k docs] (into {} (map (juxt k identity)) docs))]
     {:grid grid
      :levels (vec (sort-by :level/elevation levels))
      :xlines (by-id :xline/id assemblies)
      :connections (by-id :connection/id connections)
      :templates (by-id :template/id templates)
+     ;; the project's stored detailing settings, and the id of their record
+     ;; (nil until they are first saved)
+     :settings (:settings/values settings {})
+     :settings-id (:xt/id settings)
      :builders (:builders library)
      :sections (:sections library)}))
 
 (defn write-docs
   "Biff transaction documents for a plan's writes against the edited model.
-  `project` is needed only when the plan writes a template."
+  `project` is needed only when the plan writes a template or the settings."
   [building m' writes & {:keys [project]}]
   (for [[kind id] writes]
     (case kind
@@ -71,4 +80,5 @@
       ;; no :db/op: the whole document is replaced, so removed keys go too
       :connection (connection-doc building (get-in m' [:connections id]))
       :connection/delete {:db/op :delete :xt/id id}
-      :template (template-doc project (get-in m' [:templates id])))))
+      :template (template-doc project (get-in m' [:templates id]))
+      :settings (settings-doc project (:settings-id m') (:settings m')))))

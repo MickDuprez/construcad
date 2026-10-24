@@ -1,18 +1,22 @@
 (ns modeller.params
   "Template parameters. A value is a number, or a formula string evaluated in
   SCI with the owner's section data bound by name (d bf tf tw r1 ...), the
-  supporting member's section data as `support`, and every numeric parameter
-  of the same template, e.g. {:plate-h \"(+ d 20)\" :pitch \"(- d (* 2 tf) 70)\"}.
-  Formulas may use numeric parameters, not other formulas."
+  supporting member's section data as `support`, the project's detailing
+  settings as `settings` (modeller.settings, e.g. \"(+ (:gauge settings) 10)\")
+  and every numeric parameter of the same template, e.g. {:plate-h \"(+ d 20)\"
+  :pitch \"(- d (* 2 tf) 70)\"}. Formulas may use numeric parameters, not
+  other formulas."
   (:require [sci.core :as sci]))
 
 (defn bindings
   "What a formula sees: the owner's section data by name, the numeric
-  parameters by name, and the support's data as `support`."
-  [owner-data support-data numeric]
-  (merge (into {} (for [[k v] owner-data :when (number? v)] [(symbol (name k)) v]))
-         (into {} (for [[k v] numeric] [(symbol (name k)) v]))
-         {'support (or support-data {})}))
+  parameters by name, the support's data as `support` and the settings as
+  `settings`."
+  ([owner-data support-data numeric] (bindings owner-data support-data numeric nil))
+  ([owner-data support-data numeric settings]
+   (merge (into {} (for [[k v] owner-data :when (number? v)] [(symbol (name k)) v]))
+          (into {} (for [[k v] numeric] [(symbol (name k)) v]))
+          {'support (or support-data {}) 'settings (or settings {})})))
 
 (defn eval-formula
   "A formula's value with `binds` (see bindings): {:value n} or {:error e}."
@@ -25,9 +29,10 @@
 
 (defn resolve-params
   "Numbers for every parameter. Returns {:params {k number} :errors [...]}."
-  [params owner-data support-data]
+  ([params owner-data support-data] (resolve-params params owner-data support-data nil))
+  ([params owner-data support-data settings]
   (let [numeric (into {} (filter (comp number? val)) params)
-        binds (bindings owner-data support-data numeric)]
+        binds (bindings owner-data support-data numeric settings)]
     (reduce (fn [acc [k v]]
               (cond
                 (number? v) (assoc-in acc [:params k] v)
@@ -37,4 +42,4 @@
                                 (assoc-in acc [:params k] value)))
                 :else (assoc-in acc [:params k] v)))
             {:params {} :errors []}
-            params)))
+            params))))

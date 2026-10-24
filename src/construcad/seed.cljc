@@ -12,26 +12,30 @@
   [{:keys [square-cut end-plate beam-cut beam-plates column]}]
   {square-cut {:template/id square-cut :template/kind :connection
                :template/name "Square cut to face"
-               :template/params {:gap 10}
+               :template/params {}
                :template/parts [{:prim/id :cut :prim/type :cut :prim/name "Cut to face"
-                                 :prim/place {:at :support-face :offset [0 0 :gap]}}]}
+                                 :prim/place {:at :support-face}
+                                 :prim/params {:gap 10}}]}
+   ;; a cut behind the plate, the plate on the support face, and holes
+   ;; through the plate and the support with bolts in them. Values are on
+   ;; the parts, blank ones (gauge, bolt and hole size) come from the
+   ;; project's detailing settings; only the plate thickness, which the
+   ;; plate and the cut behind it share, is a connection parameter.
    end-plate {:template/id end-plate :template/kind :connection
               :template/name "End plate, 4 bolts"
-              :template/params {:gap 0 :plate-t 12 :plate-w "bf" :plate-h "(+ d 20)"
-                                :rows 2 :cols 2 :gauge 90 :pitch "(- d (* 2 tf) 80)"
-                                :bolt-dia 20}
-              ;; a cut behind the plate, the plate on the support face, and
-              ;; holes through the plate and the support with bolts in them
+              :template/params {:plate-t 12}
               :template/parts [{:prim/id :cut :prim/type :cut :prim/name "Cut behind the plate"
-                                :prim/place {:at :support-face :offset [0 0 "(+ gap plate-t)"]}}
+                                :prim/place {:at :support-face :offset [0 0 :plate-t]}
+                                ;; flush with the plate, whatever the cut gap setting
+                                :prim/params {:gap 0}}
                                {:prim/id :plate :prim/type :plate :prim/name "End plate"
-                                :prim/place {:at :support-face :offset [0 0 :gap]}
-                                :prim/params {:t :plate-t :shape {:rect [:plate-w :plate-h]}}
+                                :prim/place {:at :support-face}
+                                :prim/params {:t :plate-t :shape {:rect ["bf" "(+ d 20)"]}}
                                 :prim/children
                                 [{:prim/id :bolts :prim/type :hole-group :prim/name "Bolts"
                                   :prim/place {:at :parent}
-                                  :prim/params {:rows :rows :cols :cols :gauge :gauge :pitch :pitch
-                                                :bolt-dia :bolt-dia :through [:parent :support] :bolts? true}}]}]}
+                                  :prim/params {:rows 2 :cols 2 :pitch "(- d (* 2 tf) 80)"
+                                                :through [:parent :support] :bolts? true}}]}]}
    beam-cut {:template/id beam-cut :template/kind :assembly
              :template/name "Beam, square cut both ends" :template/role :beam
              :template/main {:part/insert :top-centre}

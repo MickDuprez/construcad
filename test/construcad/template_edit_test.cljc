@@ -179,7 +179,8 @@
         b2 (construcad.edits-test/by-mark m "B2")
         {:keys [state context]} (edits/assembly-page m b2)
         column (get-in state [:supports :end])
-        draft (assoc-in (template/copy->template (:end state)) [:template/params :rows] 3)
+        draft (update (template/copy->template (:end state)) :template/parts prim/update-prim :bolts
+                      assoc-in [:prim/params :rows] 3)
         {:keys [instructions errors nodes]} (te/connection-instance-preview lib (:templates m) context state :end draft)]
     (is (empty? errors))
     (testing "the real member and the real column it frames into, where they are"

@@ -14,6 +14,9 @@
     {:edit/type :template/save      :template {...}}   ; connection or assembly template (library only)
     {:edit/type :assembly/update    :state {...}}      ; one assembly, from the assembly page
                                                        ; (shape: modeller.template/assembly-state)
+    {:edit/type :settings/update    :settings {:gauge 100 :pitch nil}}
+                                                       ; the project's detailing settings;
+                                                       ; nil puts one back to its default
     {:edit/type :connection/update  :connection/id id :xline/id owner
      :connection {:connection/name .. :connection/parts [..] :connection/params {..}}}
                                                        ; one connection's own copy (a tree
@@ -22,7 +25,8 @@
 
   `plan` returns {:model m' :changed #{xline ids} :writes [record ...]} or
   {:error e}. A record is [:assembly id], [:assembly/create id], [:grid],
-  [:level id], [:connection id], [:connection/delete id] or [:template id].
+  [:level id], [:connection id], [:connection/delete id], [:template id]
+  or [:settings] (the building's project's own settings record).
   New ids (connections, templates) come from the edit's :new-id function,
   which the store supplies; a browser never chooses an id."
   (:require [modeller.assembly :as assembly]
@@ -32,6 +36,7 @@
             [modeller.model :as model]
             [modeller.node :as node]
             [modeller.prim :as prim]
+            [modeller.settings :as settings]
             [modeller.template :as template]))
 
 (defn- error [type & {:as data}] {:error (assoc data :error/type type)})
@@ -321,6 +326,35 @@
         (let [{m' :model :keys [changed]} (template/update-connection m cid copy)]
           {:model m' :changed changed :writes [[:connection cid]]})))))
 
+;; --- detailing settings -----------------------------------------------------------
+
+(defn settings-readers
+  "The XLines owning a connection that reads any of the settings `ks`
+  (modeller.settings/uses): those regenerate when they change."
+  [m ks]
+  (set (for [c (vals (:connections m))
+             :when (settings/reads-any? (settings/uses (assembly/own-recipe m c)) ks)]
+         (:connection/owner c))))
+
+(defmethod plan* :settings/update [m {changes :settings new-id :new-id}]
+  (if-let [e (first (settings/errors changes))]
+    (error :edit/bad-settings :setting (:setting e) :reason (:reason e))
+    (let [stored (reduce-kv (fn [s k v] (if (nil? v) (dissoc s k) (assoc s k v)))
+                            (or (:settings m) {}) changes)
+          m' (cond-> (assoc m :settings stored)
+               (nil? (:settings-id m)) (assoc :settings-id ((or new-id random-uuid))))]
+      {:model m'
+       :changed (settings-readers m' (settings/changed (:settings m) stored))
+       :writes [[:settings]]})))
+
+(defn settings-view
+  "What the settings panel shows: the effective settings, what the project
+  stored, and the fields with their defaults."
+  [m]
+  {:settings (settings/effective (:settings m))
+   :stored (or (:settings m) {})
+   :fields settings/fields})
+
 (defn plan
   "Validate and apply one source edit. {:model :changed :writes} or {:error}."
   [m edit]
@@ -371,8 +405,8 @@
   "The records one assembly's regeneration needs: its XLine and every XLine
   its nodes depend on (transitively), the grid and levels they resolve
   against, the connections it owns, and the connections others own that
-  bolt into it, with their owners (they cut its holes). Templates are left
-  out; the page has them."
+  bolt into it, with their owners (they cut its holes), and the project's
+  detailing settings. Templates are left out; the page has them."
   [m id]
   (let [xlines (:xlines m)
         conns (into {} (filter #(or (= id (:connection/owner (val %)))
@@ -383,7 +417,7 @@
                 (recur (conj seen x) (into (subvec queue 1)
                                            (remove seen (filter xlines (model/xline-deps (xlines x))))))
                 seen))]
-    {:grid (:grid m) :levels (:levels m)
+    {:grid (:grid m) :levels (:levels m) :settings (:settings m)
      :xlines (select-keys xlines ids)
      :connections conns}))
 
@@ -419,4 +453,5 @@
              :errors errors}
       (kinds :grid) (assoc :grid (:grid m'))
       (kinds :level) (assoc :levels (:levels m'))
-      (kinds :template) (assoc :templates (:templates m')))))
+      (kinds :template) (assoc :templates (:templates m'))
+      (kinds :settings) (assoc :settings (settings-view m')))))

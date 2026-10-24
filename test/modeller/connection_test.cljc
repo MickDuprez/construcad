@@ -273,7 +273,15 @@
 (deftest actions-as-parts
   (let [params {:gap 0 :plate-t 12 :plate-w "bf" :plate-h "(+ d 20)" :rows 2 :cols 2 :gauge 90
                 :pitch "(- d (* 2 tf) 80)" :bolt-dia 20}
-        starter (get-in starter [:ep :template/parts])
+        ;; the end plate template's tree before its values moved onto the parts
+        starter [{:prim/id :cut :prim/type :cut
+                  :prim/place {:at :support-face :offset [0 0 "(+ gap plate-t)"]}}
+                 {:prim/id :plate :prim/type :plate
+                  :prim/place {:at :support-face :offset [0 0 :gap]}
+                  :prim/params {:t :plate-t :shape {:rect [:plate-w :plate-h]}}
+                  :prim/children [{:prim/id :bolts :prim/type :hole-group :prim/place {:at :parent}
+                                   :prim/params {:rows :rows :cols :cols :gauge :gauge :pitch :pitch
+                                                 :bolt-dia :bolt-dia :through [:parent :support] :bolts? true}}]}]
         strip (fn strip [parts] (mapv #(cond-> (dissoc % :prim/name)
                                          (:prim/children %) (update :prim/children strip)
                                          (= {} (:prim/params %)) (dissoc :prim/params))
@@ -281,7 +289,7 @@
     (testing "an end plate and a bolt group: a cut, a plate on the face, holes through it and the support"
       (is (= (strip starter)
              (strip (prim/actions->parts [{:action/type :end-plate} {:action/type :bolt-group}] params)))
-          "the starter template's tree is what the old actions read as"))
+          "the old end plate template's tree is what the old actions read as"))
     (testing "a cut to face reads its gap parameter, or the action's own"
       (is (= [0 0 :gap] (get-in (prim/actions->parts [{:action/type :cut-to-face}] {:gap 10}) [0 :prim/place :offset])))
       (is (= [0 0 5] (get-in (prim/actions->parts [{:action/type :cut-to-face :action/gap 5}] {}) [0 :prim/place :offset])))

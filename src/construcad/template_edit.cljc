@@ -19,6 +19,7 @@
             [modeller.params :as params]
             [modeller.prim :as prim]
             [modeller.profile :as profile]
+            [modeller.settings :as settings]
             [modeller.template :as template]
             [modeller.vec :as v]))
 
@@ -30,9 +31,9 @@
 (defn blank [kind]
   (case kind
     :connection {:template/kind :connection :template/name "New connection"
-                 :template/params (array-map :gap 10)
+                 :template/params (array-map)
                  :template/parts [{:prim/id :cut :prim/type :cut :prim/name "Cut to face"
-                                   :prim/place {:at :support-face :offset [0 0 :gap]}}]}
+                                   :prim/place {:at :support-face}}]}
     :assembly {:template/kind :assembly :template/name "New assembly" :template/role :beam
                :template/main default-main}))
 
@@ -109,17 +110,19 @@
 
 (defn prim-defaults
   "A new prim of `type`: its name, placement and parameters. A child sits
-  on its parent; a top-level prim on the support face."
+  on its parent; a top-level prim on the support face. What the project's
+  detailing settings give (thicknesses, gauge, pitch, bolt size, a cut's
+  gap) is left blank, to inherit them; a snipe (a child cut) cuts flush."
   [type child?]
   (let [place (if child? {:at :parent} {:at :support-face})]
     (case type
       :cut {:prim/name "Cut" :prim/place (assoc place :offset [0 0 0])
-            :prim/params (if child? {:target :parent :plane :xz :gap 0} {:gap 0})}
+            :prim/params (if child? {:target :parent :plane :xz :gap 0} {})}
       :plate {:prim/name "Plate" :prim/place place
-              :prim/params {:t 10 :shape {:rect ["bf" "d"]}}}
-      :gusset {:prim/name "Gusset" :prim/place place :prim/params {:w 100 :h 100 :t 10}}
+              :prim/params {:shape {:rect ["bf" "d"]}}}
+      :gusset {:prim/name "Gusset" :prim/place place :prim/params {:w 100 :h 100}}
       :hole-group {:prim/name "Holes" :prim/place place
-                   :prim/params {:rows 2 :cols 2 :gauge 90 :pitch 70 :bolt-dia 20
+                   :prim/params {:rows 2 :cols 2
                                  :through (if child? [:parent] [:support]) :bolts? true}}
       {:prim/name (prim/type-label type) :prim/place place :prim/params {}})))
 
@@ -150,12 +153,15 @@
 
 (defn resolve-for
   "Parameters of connection template `t` (with `overrides`) resolved for an
-  owner of section `size` on a support of `support-size`.
+  owner of section `size` on a support of `support-size`, formulas seeing
+  the project's `settings` (stored or effective, modeller.settings).
   {:params {k number} :errors [{:param k ...}]}"
-  [lib t overrides size support-size]
-  (params/resolve-params (merge (:template/params t) overrides)
-                         (section-data lib size)
-                         (section-data lib support-size)))
+  ([lib t overrides size support-size] (resolve-for lib t overrides size support-size nil))
+  ([lib t overrides size support-size settings]
+   (params/resolve-params (merge (:template/params t) overrides)
+                          (section-data lib size)
+                          (section-data lib support-size)
+                          (settings/effective settings))))
 
 (defn end-info
   "What an end's card shows: the connection's name, its prims' types in order,
@@ -207,8 +213,8 @@
    :xline/start start :xline/end end :xline/rotation 0
    :assembly/parts [{:part/id :main :part/kind :extrusion :part/profile size :part/insert :top-centre}]})
 
-(defn- base-model [lib templates xlines]
-  {:grid nil :levels []
+(defn- base-model [lib templates xlines settings]
+  {:grid nil :levels [] :settings settings
    :builders (:builders lib) :sections (:sections lib)
    :templates templates
    :xlines (into {} (map (juxt :xline/id identity)) xlines)
@@ -223,14 +229,15 @@
   by the draft connection template. The support is a vertical column, or
   with `:arrangement :beam` a horizontal beam the owner meets at 90 degrees
   at mid-span, tops flush. {:instructions :errors :model :detail}, :detail
-  each prim's ECS and part (modeller.assembly/connection-detail)."
-  [lib templates draft {:keys [size support-size arrangement]}]
+  each prim's ECS and part (modeller.assembly/connection-detail). Blank
+  fields take the project's `settings`."
+  [lib templates draft {:keys [size support-size arrangement settings]}]
   (let [z column-height
         [support owner-end] (if (= :beam arrangement)
                               [(beam :support {:node/at [0 -2000 z]} {:node/at [0 2000 z]} support-size)
                                {:node/on :support :node/station 2000}]
                               [(column :support 0 support-size) {:node/of :support :node/end :end}])
-        m (-> (base-model lib templates [support (beam :owner {:node/at [-1500 0 z]} owner-end size)])
+        m (-> (base-model lib templates [support (beam :owner {:node/at [-1500 0 z]} owner-end size)] settings)
               ;; the joint holds a copy of the draft, as a real connection does
               (assoc :connections {:joint (merge {:connection/id :joint :connection/owner :owner :connection/end :end
                                                   :connection/refs [:support]}
@@ -261,8 +268,8 @@
   the connection is made, but only the member is returned: what the template
   does to the member itself. {:instructions {:member i} :nodes [start end]
   :errors :model}."
-  [lib templates draft {:keys [size support-size length] :or {support-size "200UC46.2"}}]
-  (let [length (or length (preview-length lib templates draft size support-size))
+  [lib templates draft {:keys [size support-size length settings] :or {support-size "200UC46.2"}}]
+  (let [length (or length (preview-length lib templates draft size support-size settings))
         id (or (:template/id draft) :preview/draft)
         draft (assoc draft :template/id id)
         z column-height
@@ -272,7 +279,8 @@
                  {:node/at [x 0 z]}))
         m (base-model lib (assoc templates id draft)
                       [(column :support/start 0 support-size) (column :support/end length support-size)
-                       (beam :member (node :start 0) (node :end length) size)])
+                       (beam :member (node :start 0) (node :end length) size)]
+                      settings)
         r (template/apply-template m :member draft size (let [n (atom 0)] #(keyword "preview" (str "conn" (swap! n inc)))))]
     (if (:error r)
       {:instructions {} :nodes [] :errors [(:error r)] :model m}
@@ -354,9 +362,11 @@
   both ends' reach plus a clear gap of the section depth (300 at least),
   rounded up to the next 100 mm."
   ([lib templates draft size] (preview-length lib templates draft size "200UC46.2"))
-  ([lib templates draft size support-size]
+  ([lib templates draft size support-size] (preview-length lib templates draft size support-size nil))
+  ([lib templates draft size support-size settings]
    (let [{:keys [instructions]} (assembly-preview lib templates draft
-                                                  {:size size :support-size support-size :length trial-length})
+                                                  {:size size :support-size support-size :length trial-length
+                                                   :settings settings})
          {:keys [start end]} (if-let [i (:member instructions)]
                                (end-extents i trial-length :main)
                                {:start 0 :end 0})

@@ -52,7 +52,9 @@
                 :levels (docs-where db :level/building building-id)
                 :assemblies (docs-where db :assembly/building building-id)
                 :connections (docs-where db :connection/building building-id)
-                :templates (docs-where db :template/project project)}
+                :templates (docs-where db :template/project project)
+                ;; the settings of this building's own project only
+                :settings (first (sort-by (comp str :xt/id) (docs-where db :settings/project project)))}
                library)})))
 
 (defn level-view
@@ -65,17 +67,26 @@
            :level-id level-id)))
 
 (defn templates
-  "The project's template library, and the section designations a template
-  can be applied at (for size pickers), or nil for an unknown building."
+  "The project's template library, the section designations a template
+  can be applied at (for size pickers) and the project's detailing
+  settings (edits/settings-view), or nil for an unknown building."
   [{:keys [construcad/library] :as ctx} building-id]
   (when-let [{:keys [model]} (building-model ctx building-id)]
     {:templates (:templates model)
+     :settings (edits/settings-view model)
      :sections (->> (vals (:sections library))
                     (remove :section/error)
                     (map #(-> (select-keys % [:section/designation :section/builder])
                               (assoc :mass (get-in % [:section/data :mass]))))
                     (sort-by (juxt :section/builder (comp - (fnil identity 0) :mass)))
                     vec)}))
+
+(defn settings
+  "A building's project's detailing settings (edits/settings-view), or nil
+  for an unknown building."
+  [ctx building-id]
+  (when-let [{:keys [model]} (building-model ctx building-id)]
+    (edits/settings-view model)))
 
 (defn assembly-page
   "The assembly page's data for one assembly of a building (edits/assembly-page),

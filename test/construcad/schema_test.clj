@@ -29,3 +29,8 @@
     (is (valid? :template (records/template-doc (random-uuid) {:template/id (random-uuid) :template/kind :connection
                                                               :template/name "t"
                                                               :template/parts [{:prim/id :cut :prim/type :cut}]})))))
+
+(deftest settings-documents
+  (is (valid? :settings (records/settings-doc (random-uuid) (random-uuid) {:gauge 100 :pitch 70.5})))
+  (is (valid? :settings (records/settings-doc (random-uuid) (random-uuid) nil)) "nothing changed yet")
+  (is (not (valid? :settings (records/settings-doc (random-uuid) (random-uuid) {:gauge "90"})))))
