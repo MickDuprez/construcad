@@ -46,8 +46,9 @@ model in the middle and the properties of the selected assembly on the right.
   from the assembly's page data, fetched when it is selected. **Apply a
   template** for the selection sits below.
 - **Toolbar**: Select and XLine tools, the role new XLines get, display mode,
-  XLines on/off, zoom extents, and **Levels & grid** and **Templates**, which
-  open over the model.
+  XLines on/off, zoom extents, and **Levels & grid**, **Templates** and
+  **Settings** (the project's detailing settings, below), which open over
+  the model.
 - Middle or right drag pans, Shift + middle/right drag orbits, the wheel
   zooms at the cursor. The view cube sets standard views and orbits when
   dragged.
@@ -76,10 +77,40 @@ a rotation, start and end extensions) and a connection template for each end.
 The section size is chosen when the template is applied. A **connection
 template** is built from simple parts (primitives) and parameters; a
 parameter is a number or a formula over the member's section data (`d bf tf
-tw r1` ...), `support` (the supporting member's data, e.g. `(:tf support)`)
-and the other numeric parameters, e.g. `:plate-h "(+ d 20)"`. A new project
-starts with a small library (square cut, end plate with four bolts, and beams
-and a column built from them).
+tw r1` ...), `support` (the supporting member's data, e.g. `(:tf support)`),
+`settings` (the project's detailing settings, e.g. `(+ (:gauge settings) 10)`)
+and the other numeric parameters, e.g. `"(+ d 20)"`. Values live on the parts;
+the connection's own parameters are only for values several parts share. A
+new project starts with a small library (square cut, end plate with four
+bolts, and beams and a column built from them).
+
+### Detailing settings
+
+Each project has one settings record (`:settings` documents,
+`modeller.settings`): the values a part's blank field takes. The defaults are
+AU practice:
+
+| Setting | Default | A blank ... takes it |
+|---|---|---|
+| `bolt-dia` | 20 (M20 8.8/S) | hole group's bolt diameter |
+| `hole-clearance` | 2 | hole group's hole diameter (bolt + clearance) |
+| `gauge`, `pitch` | 90, 70 | hole group's gauge and pitch |
+| `edge-distance` | 35 | (formulas only: `(:edge-distance settings)`) |
+| `plate-t`, `gusset-t` | 10, 10 | plate's and gusset's thickness |
+| `hole-overrun` | 10 | hole group's cutter overrun |
+| `cut-gap` | 0 | cut's gap |
+| `bolt-projection` | 30 | bolt length (what it passes through + projection) |
+
+A prim field resolves in this order (`modeller.settings/field-value`): the
+part's own value (a number or a formula); else a name it references (`:gauge`,
+`"plate-t"`), from the connection's shared parameters, then the setting of
+that name; else, blank, the setting it inherits; else the type's built-in
+default. **Settings** in the toolbar edits them (blank is the default); a
+change is a `:settings/update` edit (also `PUT /api/buildings/:id/settings`
+with `{:settings {:gauge 100}}`, `nil` back to the default; `GET` reads them),
+which regenerates only the assemblies whose connections inherit what changed
+(`modeller.settings/uses`) and what they bolt into. The connection editor
+shows an inherited value greyed in the blank field: "90 from settings".
 
 ### Connections from primitives
 
@@ -89,16 +120,18 @@ support face, and a hole group under the plate drilling it and the support,
 with bolts; gussets, snipes and more holes are just more parts.
 
     {:connection/name "End plate, 4 bolts"
-     :connection/params {:gap 0 :plate-t 12 :plate-h "(+ d 20)" ...}
+     :connection/params {:plate-t 12}          ; shared by the plate and the cut
      :connection/parts
      [{:prim/id :cut :prim/type :cut
-       :prim/place {:at :support-face :offset [0 0 "(+ gap plate-t)"]}}
+       :prim/place {:at :support-face :offset [0 0 :plate-t]}
+       :prim/params {:gap 0}}
       {:prim/id :plate :prim/type :plate
-       :prim/place {:at :support-face :offset [0 0 :gap]}
-       :prim/params {:t :plate-t :shape {:rect [:plate-w :plate-h]}}
+       :prim/place {:at :support-face}
+       :prim/params {:t :plate-t :shape {:rect ["bf" "(+ d 20)"]}}
        :prim/children [{:prim/id :bolts :prim/type :hole-group
-                        :prim/params {:rows :rows :cols :cols :through [:parent :support]
-                                      :bolts? true}}]}]}
+                        ;; gauge, bolt and hole size blank: from the settings
+                        :prim/params {:rows 2 :cols 2 :pitch "(- d (* 2 tf) 80)"
+                                      :through [:parent :support] :bolts? true}}]}]}
 
 Every part has the same **placement**: an anchor ECS, then an offset in it,
 a rotation about its Z and a flip (a half turn about X), in that order. A
@@ -119,7 +152,7 @@ an I section, `:web-left :web-right :flange-top-inner :flange-bottom-inner`.
 | `:cut` | slices `:target` (the member, or `:parent`) with its ECS's `:plane` (`:xy`, `:xz`, `:yz`), pushed out by `:gap`, keeping the side the plane's normal points to |
 | `:plate` | `:shape {:rect [w h]}` (centred, default bf × d) or `{:polygon [[x y] ...]}`, `:t` thick along +Z; a part `:end/<id>` |
 | `:gusset` | a triangle (`:w` along X, `:h` along Z, or a polygon) standing on its ECS's XY plane, `:t` centred on it |
-| `:hole-group` | `:rows` × `:cols` holes at `:pitch`/`:gauge`, `:dia` (bolt + 2), along Z through `:through` (`:parent`, `:support`, `:owner-main`), overrunning each face by `:overrun`; with `:bolts?` a bolt group (`:bolt-dia`, `:bolt-length` default what it passes through + 30). The support's holes are drilled in its own assembly |
+| `:hole-group` | `:rows` × `:cols` holes at `:pitch`/`:gauge`, `:dia` (bolt + clearance), along Z through `:through` (`:parent`, `:support`, `:owner-main`), overrunning each face by `:overrun`; with `:bolts?` a bolt group (`:bolt-dia`, `:bolt-length` default what it passes through + the bolt projection). The support's holes are drilled in its own assembly |
 
 Types are a multimethod (`modeller.connection/apply-prim`), so new ones plug in.
 Output parts are named by end and part id (`:start/plate`, `:end/bolts`).
@@ -174,14 +207,19 @@ which copies the template as it is now.
   (`:connection/update`); None leaves the end plain when the page is saved. **Save** sends `:assembly/update` (and `:xline/set-rotation` if
   that changed). **Re-apply from library…** applies a template (the one it
   came from first) at a size to this member again.
-- The **connection editor** edits the parameters at the top (a formula's
-  error shows on its row), the connection's **parts tree** on the left (add
-  Cut / Plate / Gusset / Hole group to the connection or under the selected
-  part, ↑ ↓ among its siblings, remove), and the selected part on the right:
-  its name, the **Placement** every type shares (anchor and face, offset X Y
-  Z, rotation with 0/90/180/270 or typed, flip), then its type's own fields.
-  The preview updates as you type, the selected part in orange with its ECS
-  (X red, Y green, Z blue); errors name the part they come from. A connection template knows nothing of member roles, only the
+- The **connection editor** fills the window without scrolling the page: the
+  connection's **parts tree** on the left (add Cut / Plate / Gusset / Hole
+  group to the connection or under the selected part, ↑ ↓ among its
+  siblings, remove), the selected part beside it (its name, the
+  **Placement** every type shares: anchor and face, offset X Y Z, rotation
+  with 0/90/180/270 or typed, flip; then its type's own fields, blank ones
+  showing what they take from the settings), each scrolling on its own, and
+  the preview on the right (above them on a window narrower than 1100 px).
+  Picking another part keeps the tree where it was and opens the part at its
+  top. **Parameters…** in the header (with a count) opens the shared
+  parameters (a formula's error shows on its row). The preview updates as
+  you type, the selected part in orange with its ECS (X red, Y green, Z
+  blue); errors name the part they come from. A connection template knows nothing of member roles, only the
   two ECSs it joins and how (cut, plate, bolts...), so one template serves a
   beam into a column and a joist into a beam.
   - **Library mode** (from the Templates panel or an assembly template's end)
@@ -208,6 +246,14 @@ which copies the template as it is now.
   and **Apply** (`:assembly/apply-template`). The supporting member of each
   end is read from the end node; an end that isn't on another XLine gets no
   connection, and the status bar says so.
+
+Connections and templates saved before the settings keep their values as
+connection parameters (`:gauge :gauge`): a name still resolves from them, so
+they make what they made. A field that names a parameter the connection
+doesn't have (`:gauge`) now takes the setting of that name. Their values can
+be moved onto the parts, or cleared to inherit the settings, in the editor.
+The starter library (seeded only into an empty database) has its values on
+the parts.
 
 Connections and connection templates saved as flat action lists
 (`:connection/actions`, `:template/actions`: `:cut-to-face`, `:end-plate`,
@@ -241,7 +287,7 @@ viewer over a websocket. The browser never sends geometry.
 | `construcad.snap` | snap candidates and the node references they write (pure) |
 | `construcad.store` | XTDB reads and the edit transaction |
 | `construcad.template-edit` | template drafts, typed parameters, the end-on view and member-space of the member, in-browser preview models, assembly page edits (pure) |
-| `construcad.api` | EDN endpoints (projects, buildings, view, templates, one assembly, edits) and the patch websocket |
+| `construcad.api` | EDN endpoints (projects, buildings, view, templates, one assembly, settings, edits) and the patch websocket |
 | `construcad.app.reader` | instructions to three.js; `construcad.app.slice` cuts and caps meshes |
 | `construcad.app.viewport` | camera, navigation, view cube, hidden-line display, picking |
 | `construcad.app.templates` | template library panel (thumbnails), assembly page (templates and single assemblies), connection editor (library and instance modes) |
@@ -267,7 +313,8 @@ viewer over a websocket. The browser never sends geometry.
 | `modeller.prim` | connections as trees of primitives: walking and editing them, checking them, reading old action lists as trees |
 | `modeller.connection` | evaluating a connection's tree: anchors (ECS), values, the prim types (`:cut`, `:plate`, `:gusset`, `:hole-group`) |
 | `modeller.assembly` | an assembly's instruction: its parts, each connection's own recipe evaluated on it, and the holes others drill in it |
-| `modeller.params` | template parameters: numbers or SCI formulas over section data |
+| `modeller.params` | template parameters: numbers or SCI formulas over section data and `settings` |
+| `modeller.settings` | detailing settings: AU defaults, what a blank field inherits, the resolution order, which settings a connection reads |
 | `modeller.template` | templates: copy an assembly template onto an XLine at a size, connection copies and provenance, one connection's update |
 | `modeller.core` | `regenerate` and `edit` entry points |
 
