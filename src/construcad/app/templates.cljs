@@ -42,6 +42,7 @@
             [modeller.library :as library]
             [modeller.prim :as prim]
             [modeller.sections-au :as au]
+            [modeller.settings :as settings]
             [modeller.template :as template]))
 
 (defonce lib (delay (library/library {} au/rows)))
@@ -50,7 +51,12 @@
 ;; server (GET /templates, and patches). :send! sends one edit and returns a
 ;; promise of true when the server took it; :load-assembly! returns a promise
 ;; of an assembly's page data (construcad.edits/assembly-page), or nil.
-(defonce env* (atom {:templates {} :sections [] :send! nil :load-assembly! nil}))
+(defonce env* (atom {:templates {} :sections [] :send! nil :load-assembly! nil
+                     ;; the project's detailing settings (construcad.edits/settings-view)
+                     :settings-view {:settings settings/defaults :stored {} :fields settings/fields}}))
+
+(defn effective-settings [] (get-in @env* [:settings-view :settings] settings/defaults))
+(defn stored-settings [] (get-in @env* [:settings-view :stored] {}))
 
 ;; The open editors, innermost last: {:kind :draft :size :support-size :error ...}.
 (defonce dlg* (atom {:stack []}))
@@ -458,15 +464,21 @@
        (h :p {:class "muted small"} (anchor-help at) " Then the offset (in that ECS), the rotation and the flip, in that order."))))
 
 (defn- param-row
-  "One of a prim's own values, in a table row."
+  "One of a prim's own values, in a table row. Blank, it shows what it
+  takes from the project's detailing settings (\"90 from settings\"), else
+  `placeholder`, the built-in default."
   [{id :prim/id :as p} k label & [{:keys [placeholder help]}]]
-  (h :tr {}
-     (h :th {} label)
-     (h :td {}
-        (value-field (str (name k) "-" (name id)) (get-in p [:prim/params k])
-                     #(update-prim! id (fn [q] (if (nil? %) (update q :prim/params dissoc k) (assoc-in q [:prim/params k] %))))
-                     (when placeholder {:placeholder placeholder}))
-        (when help (h :span {:class "muted small"} " " help)))))
+  (let [inherited (settings/placeholder (effective-settings) p k)]
+    (h :tr {}
+       (h :th {} label)
+       (h :td {}
+          (value-field (str (name k) "-" (name id)) (get-in p [:prim/params k])
+                       #(update-prim! id (fn [q] (if (nil? %) (update q :prim/params dissoc k) (assoc-in q [:prim/params k] %))))
+                       (when-let [ph (or inherited placeholder)]
+                         {:placeholder ph :class (str "val " (when inherited "inherits ")
+                                                      (let [v (get-in p [:prim/params k])]
+                                                        (cond (number? v) "number" (keyword? v) "name" :else "formula")))}))
+          (when help (h :span {:class "muted small"} " " help))))))
 
 (defn- set-param! [id k v]
   (update-prim! id #(if (nil? v) (update % :prim/params dissoc k) (assoc-in % [:prim/params k] v))))
@@ -487,7 +499,7 @@
           (h :td {} (select-of (str "plane-" (name id)) (name (or plane :xy))
                                [["xy" "XY (square to Z)"] ["xz" "XZ (square to Y)"] ["yz" "YZ (square to X)"]]
                                #(set-param! id :plane (when (not= "xy" %) (keyword %))))))
-       (param-row p :gap "Gap" {:placeholder "0" :help "along the plane's normal"})
+       (param-row p :gap "Gap" {:help "along the plane's normal"})
        (h :tr {} (h :td {:colspan 2 :class "muted small"} "Keeps the side the plane's normal points to: for XY at the node or the support face, the member's side.")))))
 
 (defn- shape-fields [{id :prim/id :as p} default]
@@ -516,13 +528,13 @@
 (defmethod type-fields :plate [p _]
   (h :table {:class "placement"}
      (shape-fields p nil)
-     (param-row p :t "Thickness" {:placeholder "10" :help "along +Z"})))
+     (param-row p :t "Thickness" {:help "along +Z"})))
 
 (defmethod type-fields :gusset [p _]
   (h :table {:class "placement"}
      (param-row p :w "Leg along X" {:placeholder "100"})
      (param-row p :h "Leg along Z" {:placeholder "100"})
-     (param-row p :t "Thickness" {:placeholder "10" :help "centred on the XZ plane"})
+     (param-row p :t "Thickness" {:help "centred on the XZ plane"})
      (h :tr {} (h :td {:colspan 2 :class "muted small"}
                   "A triangle standing on its ECS's XY plane, its legs along X and Z: on a plate's face, turn it with the rotation."))))
 
@@ -534,11 +546,11 @@
     (h :table {:class "placement"}
        (param-row p :rows "Rows (up Y)" {:placeholder "2"})
        (param-row p :cols "Columns (across X)" {:placeholder "2"})
-       (param-row p :pitch "Pitch" {:placeholder "70"})
-       (param-row p :gauge "Gauge" {:placeholder "90"})
-       (param-row p :bolt-dia "Bolt diameter" {:placeholder "20"})
-       (param-row p :dia "Hole diameter" {:placeholder "bolt + 2"})
-       (param-row p :overrun "Cutter overrun" {:placeholder "10" :help "past each face"})
+       (param-row p :pitch "Pitch")
+       (param-row p :gauge "Gauge")
+       (param-row p :bolt-dia "Bolt diameter")
+       (param-row p :dia "Hole diameter")
+       (param-row p :overrun "Cutter overrun" {:help "past each face"})
        (h :tr {} (h :th {} "Through")
           (h :td {}
              (when child? (check (str "thr-parent-" (name id)) "its parent" (through :parent) #(set-through! :parent %)))
@@ -546,7 +558,7 @@
              (check (str "thr-owner-" (name id)) "the member" (through :owner-main) #(set-through! :owner-main %))))
        (h :tr {} (h :th {} "Bolts")
           (h :td {} (check (str "bolts-" (name id)) "bolts in the holes" bolts? #(set-param! id :bolts? (when % true)))))
-       (when bolts? (param-row p :bolt-length "Bolt length" {:placeholder "what it passes through + 30"}))
+       (when bolts? (param-row p :bolt-length "Bolt length"))
        (h :tr {} (h :td {:colspan 2 :class "muted small"}
                     "Holes run along Z, centred on the ECS. The support's holes are drilled in its own assembly.")))))
 
@@ -605,27 +617,54 @@
                    :selected nil :error nil
                    :note (str "Replaced with a copy of " (:template/name t) ": Save to keep it.")))))
 
+(defn- params-flyout
+  "The connection's shared parameters, behind Parameters… in the header:
+  named values two or more parts use (a plate's thickness that the cut
+  behind it also needs), each a number or a formula."
+  [draft resolved]
+  (h :div {:class "params-flyout"}
+     (h :div {:class "row"}
+        (h :strong {} "Shared parameters")
+        (h :span {:class "grow"})
+        (h :button {:class "small" :title "Close" :on-click #(update-top! assoc :params-open? false)} "✕"))
+     (params-table (:template/params draft) resolved
+                   {:on-rename #(update-draft! update :template/params te/rename-param %1 %2)
+                    :on-set #(update-draft! update :template/params te/set-param %1 %2)
+                    :on-remove #(update-draft! update :template/params te/remove-param %)})
+     (h :p {:class "muted small"}
+        "Only for values several parts share: put the rest on the part, and leave a part's field blank to take the "
+        "project's detailing settings (toolbar, Settings). A part uses one by its name, e.g. " (h :code {} "plate-t") ".")
+     (h :p {:class "muted small"}
+        "Formulas see the member's section data (" (h :code {} "d bf tf tw r1") "…), "
+        (h :code {} "support") " (the supporting member's, e.g. " (h :code {} "(:tf support)") "), "
+        (h :code {} "settings") " (e.g. " (h :code {} "(+ (:gauge settings) 10)") ") and the numeric parameters; "
+        "a part's values also see the formula parameters.")))
+
 (defn- connection-editor
-  "The connection editor: the connection's parameters and its parts tree on
-  the left, the selected part's editor (its placement, then its type's own
-  fields) in the middle, the preview on the right, the selected part picked
-  out in it with its ECS. Library mode (:connection) edits a library
+  "The connection editor, fixed to the window: the parts tree on the left
+  and the selected part's editor (its placement, then its type's own
+  fields) beside it, each scrolling on its own, and the preview on the
+  right (above them on a narrower window), the selected part picked out in
+  it with its ECS. The connection's shared parameters sit behind
+  Parameters… in the header. Library mode (:connection) edits a library
   template against a sample owner and support; instance mode
   (:conn-instance) edits one assembly's own copy against the real member
   and what that end sits on."
-  [{:keys [kind draft arrangement error note saving? from end state context supports selected] :as dlg}]
+  [{:keys [kind draft arrangement error note saving? from end state context supports selected params-open?] :as dlg}]
   (let [instance? (= :conn-instance kind)
         parts (:template/parts draft)
         support-id (get-in state [:supports end])
         size (if instance? (:assembly/size state) (:size dlg))
         support-size (if instance? (or (get-in supports [end :size]) (size-of context support-id)) (:support-size dlg))
+        context (when context (assoc context :settings (stored-settings)))
         preview-of (fn [arr]
                      (if instance?
                        (te/connection-instance-preview @lib (:templates @env*) context state end draft)
                        (te/connection-preview @lib (:templates @env*) draft
-                                              {:size size :support-size support-size :arrangement arr})))
+                                              {:size size :support-size support-size :arrangement arr
+                                               :settings (stored-settings)})))
         {:keys [instructions errors nodes detail]} (preview-of arrangement)
-        resolved (te/resolve-for @lib draft {} (when (string? size) size) support-size)
+        resolved (te/resolve-for @lib draft {} (when (string? size) size) support-size (stored-settings))
         iso (if instance? (second (first (te/preview-views nodes))) [1 -1.4 0.9])
         host (preview-host! iso)
         owner-id (if instance? (:xline/id state) :owner)
@@ -636,7 +675,8 @@
                        opts))
         prim-errors (filter :prim/id errors)
         other-errors (remove #(or (:param %) (:prim/id %)) errors)
-        bad (set (map :prim/id prim-errors))]
+        bad (set (map :prim/id prim-errors))
+        n-params (count (:template/params draft))]
     (show! instructions detail)
     (h :div {:class "dialog connection-editor"}
        (h :header {}
@@ -645,6 +685,12 @@
                       (:template/id draft) "Connection template"
                       :else "New connection template"))
           (text-field "name" (:template/name draft) #(update-draft! assoc :template/name %) {:class "name"})
+          (h :div {:class "flyout-anchor"}
+             (h :button {:class (str (when params-open? "on") (when (seq (:errors resolved)) " bad"))
+                         :title "The connection's shared parameters: values several parts use"
+                         :on-click #(update-top! update :params-open? not)}
+                "Parameters… " (h :span {:class "badge"} (str n-params)))
+             (when params-open? (params-flyout draft resolved)))
           (h :span {:class "grow"})
           (when instance?
             (h :button {:disabled saving? :title "Replace this end's connection with a copy of a library template"
@@ -667,55 +713,45 @@
                "This assembly's own copy: saving changes this end only, never the library.")
             (when note (h :span {:class "small"} note))))
        (h :div {:class "dialog-body conn-layout"}
-          (h :div {:class "params-area"}
-             (h :h3 {} "Parameters")
-             (params-table (:template/params draft) resolved
-                           {:on-rename #(update-draft! update :template/params te/rename-param %1 %2)
-                            :on-set #(update-draft! update :template/params te/set-param %1 %2)
-                            :on-remove #(update-draft! update :template/params te/remove-param %)})
-             (h :p {:class "muted small"}
-                "A value here or in a part is a number, a parameter's name or a formula, e.g. " (h :code {} "(+ d 20)")
-                ". Formulas see the member's section data (" (h :code {} "d bf tf tw r1") "…), "
-                (h :code {} "support") " (the supporting member's, e.g. " (h :code {} "(:tf support)")
-                ") and the numeric parameters; a part's values also see the formula parameters."))
-          (h :div {:class "tree-area"}
+          ;; the tree keeps its scroll across re-renders; the part's editor
+          ;; is keyed by the part, so picking another starts at its top
+          (h :div {:class "tree-area pane" :data-scroll "tree"}
              (h :h3 {} "Parts")
              (parts-tree parts selected bad)
              (h :p {:class "muted small"}
                 "A connection is built from simple parts: cuts, plates, gussets and hole groups, each placed from an anchor. "
                 "A child is placed from its parent and works on it (holes through a plate, a snipe off it)."))
-          (h :div {:class "editor-area"}
+          (h :div {:class "editor-area pane" :data-scroll (str "part-" (some-> selected name))}
              (prim-editor parts selected
                           (map #(regen-error-text parts %) (filter #(= selected (:prim/id %)) prim-errors))))
           (h :div {:class "preview-area"}
-             (h :h3 {} "Preview")
              (if instance?
                (h :p {:class "muted small"}
                   (str (:assembly/mark state) (when (string? size) (str ", " size)) " into "
                        (get-in supports [end :assembly/mark] "its support")
                        (when support-size (str ", " support-size))
                        ", where they are in the model, as Save would make them."))
-               (h :table {:class "placement"}
-                  (h :tr {} (h :th {} "Owner") (h :td {} (size-select "size" size #(update-top! assoc :size %))))
-                  (h :tr {} (h :th {} "Support")
-                     (h :td {} (size-select "support-size" support-size #(update-top! assoc :support-size %))))
-                  (h :tr {} (h :th {} "Support as")
-                     (h :td {} (select-of "arrangement" (name arrangement)
-                                          (map (fn [[k l]] [(name k) l]) te/arrangements)
-                                          #(let [arr (keyword %)
-                                                 {:keys [instructions detail]} (preview-of arr)]
-                                             (update-top! assoc :arrangement arr)
-                                             (show! instructions detail :fit? true)))))))
-             (when-not instance?
-               (h :p {:class "muted small"}
-                  "A sample owner and support: saving changes the library template only. "
-                  "Assemblies already made from it keep their own copies."))
-             (view-buttons (if instance?
-                             (te/preview-views nodes)
-                             [["Iso" [1 -1.4 0.9]] ["Plan" [0 0 1]] ["Side" [0 -1 0]] ["End" [-1 0 0]]]))
+               (h :div {:class "preview-setup"}
+                  (h :label {} (h :span {:class "muted small"} "Owner ")
+                     (size-select "size" size #(update-top! assoc :size %)))
+                  (h :label {} (h :span {:class "muted small"} "into ")
+                     (size-select "support-size" support-size #(update-top! assoc :support-size %)))
+                  (h :label {} (h :span {:class "muted small"} "as ")
+                     (select-of "arrangement" (name arrangement)
+                                (map (fn [[k l]] [(name k) l]) te/arrangements)
+                                #(let [arr (keyword %)
+                                       {:keys [instructions detail]} (preview-of arr)]
+                                   (update-top! assoc :arrangement arr)
+                                   (show! instructions detail :fit? true))))))
+             (h :div {:class "row"}
+                (view-buttons (if instance?
+                                (te/preview-views nodes)
+                                [["Iso" [1 -1.4 0.9]] ["Plan" [0 0 1]] ["Side" [0 -1 0]] ["End" [-1 0 0]]]))
+                (h :span {:class "muted small"}
+                   (if instance?
+                     "Selected part orange; ECS X red, Y green, Z blue."
+                     "A sample owner and support; saving changes the library only. Selected part orange; ECS X red, Y green, Z blue.")))
              host
-             (when selected
-               (h :p {:class "muted small"} "The selected part is orange; its ECS is drawn X red, Y green, Z blue."))
              (messages (concat (map #(regen-error-text parts %) other-errors)
                                (map #(regen-error-text parts %) (remove #(= selected (:prim/id %)) prim-errors)))))))))
 
@@ -917,9 +953,10 @@
         (h :div {:class "messages"} (regen-messages errors)))))
 
 (defn- assembly-builder [{:keys [draft size error saving?] :as dlg}]
-  (let [length (te/preview-length @lib (:templates @env*) draft size (:support-size dlg))
+  (let [length (te/preview-length @lib (:templates @env*) draft size (:support-size dlg) (stored-settings))
         {:keys [errors] :as preview} (te/assembly-preview @lib (:templates @env*) draft
-                                                          {:size size :support-size (:support-size dlg) :length length})]
+                                                          {:size size :support-size (:support-size dlg) :length length
+                                                           :settings (stored-settings)})]
     (h :div {:class "dialog assembly-builder"}
        (h :header {}
           (h :h2 {} (if (:template/id draft) "Assembly template" "New assembly template"))
@@ -977,7 +1014,7 @@
 (defn- assembly-instance [{:keys [draft info rotation error saving? apply context] :as dlg}]
   (let [size (:assembly/size draft)
         role (:xline/role draft :beam)
-        preview (when context (te/instance-preview @lib (:templates @env*) context draft))]
+        preview (when context (te/instance-preview @lib (:templates @env*) (assoc context :settings (stored-settings)) draft))]
     (h :div {:class "dialog assembly-builder"}
        (h :header {}
           (h :h2 {} "Assembly")
@@ -1024,13 +1061,16 @@
     (if-not dlg
       (do (set! (.. root -style -display) "none")
           (.replaceChildren root))
-      (do (set! (.. root -style -display) "flex")
-          (dom/replace-keeping-focus!
-           root [(case (:kind dlg)
-                   (:connection :conn-instance) (connection-editor dlg)
-                   :picker (picker dlg)
-                   :assembly (assembly-builder dlg)
-                   :instance (assembly-instance dlg))])))))
+      (let [scrolled (dom/scroll-positions root)]
+        (set! (.. root -style -display) "flex")
+        (dom/replace-keeping-focus!
+         root [(case (:kind dlg)
+                 (:connection :conn-instance) (connection-editor dlg)
+                 :picker (picker dlg)
+                 :assembly (assembly-builder dlg)
+                 :instance (assembly-instance dlg))])
+        ;; panes keep their place while you type or pick in them
+        (dom/restore-scroll! root scrolled)))))
 
 (defn library-section
   "The side panel's template library: both kinds, each with its thumbnail,
@@ -1056,6 +1096,13 @@
        (h :div {:class "buttons"}
           (h :button {:on-click #(open! (te/blank :assembly))} "New assembly")
           (h :button {:on-click #(open! (te/blank :connection))} "New connection")))))
+
+(defn settings-changed!
+  "The project's detailing settings from the server (construcad.edits/
+  settings-view): open editors show and preview with them."
+  [view]
+  (swap! env* assoc :settings-view view)
+  (when (top) (render!)))
 
 (defn templates-changed!
   "New templates from the server: keep open editors' references fresh."

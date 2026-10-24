@@ -58,6 +58,8 @@ ul.tree ul { padding-left: 12px; }
   max-height: calc(100% - 120px); border: 1px solid #b8c4cc; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
 .popover-head { display: flex; align-items: center; justify-content: space-between; }
 .popover section h2 { margin-top: 10px; }
+.popover table.settings th { text-align: left; font-weight: 600; padding: 2px 6px 2px 0; white-space: nowrap; }
+.popover table.settings input.num { width: 70px; }
 .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
   margin: 16px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
 .panel table { width: 100%; border-collapse: collapse; }
@@ -189,24 +191,41 @@ table.params input.pname { width: 120px; }
 table.params input.formula { font: 12px ui-monospace, monospace; color: #3b4f9a; }
 table.params tr.overridden td:first-child { font-weight: 600; color: var(--accent); }
 table.params tr.bad input { border-color: var(--warn); }
-/* connection editor: parameters and the parts tree on the left, the selected
-   part's editor in the middle, the preview on the right */
-.dialog-body.conn-layout { display: grid; gap: 10px 18px; align-items: start;
-  grid-template-columns: minmax(190px, 240px) minmax(300px, 1fr) minmax(360px, 1.15fr);
-  grid-template-areas: "params params preview" "tree editor preview"; }
-.conn-layout .params-area { grid-area: params; min-width: 0; }
-.conn-layout .tree-area { grid-area: tree; min-width: 0; }
-.conn-layout .editor-area { grid-area: editor; min-width: 0; }
-.conn-layout .preview-area { grid-area: preview; min-width: 0; display: flex; flex-direction: column; position: sticky; top: 0; }
-.conn-layout .preview-area .mini-view { flex: none; height: 460px; min-height: 0; }
+/* connection editor, fixed to the window: the parts tree and the selected
+   part's editor scroll on their own, the preview stays in view (right, or
+   above them on a narrower window); the shared parameters are a flyout */
+.dialog.connection-editor { min-height: 0; overflow: visible; }
+.dialog.connection-editor header { flex-wrap: wrap; row-gap: 6px; position: relative; }
+.dialog-body.conn-layout { display: grid; gap: 0 16px; overflow: hidden; min-height: 0; padding-bottom: 10px;
+  grid-template-columns: minmax(190px, 240px) minmax(320px, 1fr) minmax(360px, 1.15fr);
+  grid-template-rows: minmax(0, 1fr); grid-template-areas: "tree editor preview"; }
+.conn-layout .pane { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-right: 4px; }
+.conn-layout .tree-area { grid-area: tree; }
+.conn-layout .editor-area { grid-area: editor; }
+.conn-layout .preview-area { grid-area: preview; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding-top: 8px; }
+.conn-layout .preview-area .mini-view { flex: 1 1 auto; min-height: 180px; }
+.conn-layout .preview-area .errors { max-height: 30%; overflow: auto; flex: none; }
+.preview-setup { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 4px; }
+.preview-setup select { max-width: 150px; }
 @media (max-width: 1100px) {
-  .dialog-body.conn-layout { grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
-    grid-template-areas: "params params" "tree editor" "preview preview"; }
-  .conn-layout .preview-area { position: static; }
+  .dialog-body.conn-layout { grid-template-columns: minmax(180px, 230px) minmax(0, 1fr);
+    grid-template-rows: minmax(200px, 40%) minmax(0, 1fr); grid-template-areas: "preview preview" "tree editor"; }
+  .conn-layout .preview-area { padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .dialog.connection-editor header input.name { width: 200px; }
 }
 @media (max-width: 700px) {
-  .dialog-body.conn-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "params" "tree" "editor" "preview"; }
+  .dialog-body.conn-layout { overflow: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: none;
+    grid-template-areas: "preview" "tree" "editor"; }
+  .conn-layout .preview-area .mini-view { flex: none; height: 300px; }
+  .conn-layout .pane { overflow: visible; }
 }
+.flyout-anchor { position: static; }
+.flyout-anchor .badge { display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 8px; font-size: 11px;
+  background: #dfe7ec; color: var(--ink); text-align: center; }
+button.bad { border-color: var(--warn); color: var(--warn); }
+.params-flyout { position: absolute; z-index: 6; top: calc(100% - 4px); right: 14px; width: min(620px, calc(100% - 28px));
+  max-height: 60vh; overflow: auto; padding: 8px 12px; background: var(--panel); border: 1px solid #b8c4cc;
+  border-radius: 6px; box-shadow: 0 8px 28px rgba(0,0,0,.22); }
 ul.parts-tree { list-style: none; margin: 4px 0 6px; padding: 0; border: 1px solid var(--line); border-radius: 4px; }
 ul.parts-tree li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; user-select: none;
   border-bottom: 1px solid var(--line); min-width: 0; }
@@ -219,11 +238,16 @@ ul.parts-tree .prim-name { flex: 1; min-width: 0; overflow: hidden; text-overflo
 .add-parts { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
 .add-parts .label { width: 100%; color: var(--muted); font-size: 12px; }
 .prim-editor section { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px 8px; margin-bottom: 10px; }
-.prim-editor input.val { width: 110px; }
+.prim-editor table.placement { width: 100%; }
+.prim-editor input.val { width: 190px; max-width: 100%; transition: width .12s; }
+.prim-editor input.val:focus { width: 100%; min-width: 190px; }
+.prim-editor input.val.inherits::placeholder { color: #8b9aa5; font-style: italic; }
 .prim-editor input.val.formula, .prim-editor input.val.name { font: 12px ui-monospace, monospace; color: #3b4f9a; }
 .prim-editor input.val.wide { width: 100%; }
 .prim-editor .triple { display: flex; gap: 4px; }
-.prim-editor .triple input.val { width: 76px; }
+/* offsets share the row and the one being typed in grows */
+.prim-editor .triple input.val, .prim-editor .triple input.val:focus { flex: 1 1 0; width: 0; min-width: 54px; transition: flex-grow .12s; }
+.prim-editor .triple input.val:focus { flex-grow: 4; }
 .prim-editor label.check { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
 .prim-editor input.name-field { width: 100%; font-size: 14px; }
 /* the library picker */

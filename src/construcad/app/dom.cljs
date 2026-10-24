@@ -32,3 +32,18 @@
     (.apply (.-replaceChildren el) el (into-array (remove nil? children)))
     (when focused
       (some-> (.querySelector el (str "[data-k=\"" focused "\"]")) .focus))))
+
+(defn scroll-positions
+  "{data-scroll key scrollTop} for the elements under el that carry a
+  data-scroll key, to put back after a re-render (restore-scroll!)."
+  [^js el]
+  (into {} (for [^js e (array-seq (.querySelectorAll el "[data-scroll]"))]
+             [(.getAttribute e "data-scroll") (.-scrollTop e)])))
+
+(defn restore-scroll!
+  "Scroll each element under el back to where `positions` had the one with
+  the same data-scroll key; an element with a new key stays at its top."
+  [^js el positions]
+  (doseq [^js e (array-seq (.querySelectorAll el "[data-scroll]"))]
+    (when-let [top (get positions (.getAttribute e "data-scroll"))]
+      (set! (.-scrollTop e) top))))

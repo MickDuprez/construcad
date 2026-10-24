@@ -23,7 +23,7 @@
          :collapsed #{}     ; navigator branches closed: [level-id] and [level-id role]
          :pages {}          ; assembly id -> its page data (properties: ends, supports)
          :props-open? true
-         :popover nil       ; :levels or :templates, opened from the toolbar
+         :popover nil       ; :levels, :templates or :settings, opened from the toolbar
          :active-level nil  ; level id the grid is drawn at and snaps to
          :tool :select
          :selected nil      ; the assembly the grips and properties are for
@@ -123,6 +123,7 @@
     (swap! state* update :pages #(if (:templates patch) {} (apply dissoc % ids)))
     (apply-level-filter!)
     (when-let [t (:templates patch)] (templates/templates-changed! t))
+    (when-let [s (:settings patch)] (templates/settings-changed! s))
     ;; snap points may have moved with the patch
     (swap! state* assoc :snap nil)
     (doseq [id (:selection @state*)] (highlight! id true))
@@ -169,8 +170,9 @@
 
 (defn load-templates! []
   (-> (fetch-edn (str "/api/buildings/" (:building-id @state*) "/templates") {})
-      (.then (fn [[status {:keys [templates sections]}]]
+      (.then (fn [[status {:keys [templates sections settings]}]]
                (when (= 200 status)
+                 (when settings (templates/settings-changed! settings))
                  (swap! templates/env* assoc :sections sections
                         :send! send-edit!
                         :load-assembly! load-assembly!)
@@ -474,6 +476,30 @@
                   (axes "x-axes (offset along x)" :grid/x-axes)
                   (axes "y-axes (offset along y)" :grid/y-axes))))))
 
+(defn- settings-section
+  "The project's detailing settings: what a part's blank field takes
+  (gauge, pitch, bolt and hole size, thicknesses...). A change regenerates
+  the assemblies that inherit it; a blank box is the default."
+  []
+  (let [{:keys [stored fields]} (:settings-view @templates/env*)]
+    (section "Detailing settings"
+             (h :table {:class "settings"}
+                (for [[k default label help] fields]
+                  (h :tr {}
+                     (h :th {:title help} label)
+                     (h :td {} (h :input {:type "number" :step "any" :min 0 :class "num" :data-k (str "set-" (name k))
+                                          :value (if (contains? stored k) (get stored k) "")
+                                          :placeholder (str default)
+                                          :on-change (fn [e]
+                                                       (let [t (str/trim (.. e -target -value))
+                                                             v (when-not (str/blank? t) (parse-double t))]
+                                                         (when (or v (str/blank? t))
+                                                           (send-edit! {:edit/type :settings/update :settings {k v}}))))}))
+                     (h :td {:class "muted small"} help))))
+             (h :p {:class "muted small"}
+                "For this project. A part's blank field takes these (shown greyed in the connection editor, \"90 from settings\"); "
+                "a value typed on the part wins. Blank here is the default shown. Changing one regenerates the members that inherit it."))))
+
 (defn edit-assembly!
   "Open the assembly page for one assembly, in instance mode."
   [id]
@@ -561,7 +587,9 @@
           (h :button {:on-click vp/zoom-extents!} "Zoom extents"))
        (h :div {:class "tool-group"}
           (h :button {:class (when (= :levels popover) "on") :on-click #(toggle-popover! :levels)} "Levels & grid")
-          (h :button {:class (when (= :templates popover) "on") :on-click #(toggle-popover! :templates)} "Templates"))))))
+          (h :button {:class (when (= :templates popover) "on") :on-click #(toggle-popover! :templates)} "Templates")
+          (h :button {:class (when (= :settings popover) "on") :title "The project's detailing settings: bolts, gauge, pitch, thicknesses"
+                      :on-click #(toggle-popover! :settings)} "Settings"))))))
 
 (defn- render-popover! []
   (when-let [el (:popover @ui*)]
@@ -571,10 +599,11 @@
        el
        (when k
          [(h :div {:class "popover-head"}
-             (h :strong {} (if (= :levels k) "Levels & grid" "Templates"))
+             (h :strong {} (case k :levels "Levels & grid" :settings "Detailing settings" "Templates"))
              (h :button {:class "small" :title "Close" :on-click #(toggle-popover! k)} "✕"))
-          (if (= :levels k)
-            (h :div {} (levels-section) (grid-section))
+          (case k
+            :levels (h :div {} (levels-section) (grid-section))
+            :settings (settings-section)
             (templates/library-section))])))))
 
 ;; navigator
