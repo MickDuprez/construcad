@@ -301,3 +301,89 @@
       (is (v/nearly= 2696.0 ((world :end/bottom [0 0 0]) 2) 1e-6) "the bottom one at the underside, 304 down")
       (is (v/nearly= 2596.0 ((world :end/bottom [100 0 0]) 2) 1e-6)))
     (is (= 4 (get-in parts [:end/bolts :part/size :count])))))
+
+(deftest stub-lengths
+  (testing "a stub is the connection's extent plus 300 clear, 600 at least, in 100s"
+    (is (= 600 (te/stub-length 0)))
+    (is (= 600 (te/stub-length 300)))
+    (is (= 700 (te/stub-length 301)))
+    (is (= 1200 (te/stub-length 900))))
+  (testing "the support's stub is centred on what the connection spans along it"
+    (is (= [-300.0 300.0] (te/support-window 0 0)))
+    (is (= [-550.0 550.0] (te/support-window -400 400)))))
+
+(defn- stubs [draft opts]
+  (te/stub-preview (te/connection-preview lib templates draft opts) :owner :end :support))
+
+(defn- z-range
+  "The XLine-local Z range of a member's parts (its XLine has no bounds)."
+  [instr]
+  (let [bs (keep #'te/bbox (get-in instr [:child :children]))]
+    [(reduce min (map #(get-in % [:min 2]) bs)) (reduce max (map #(get-in % [:max 2]) bs))]))
+
+(defn- unclipped [instr] (if (:slice/clip? instr) (recur (:target instr)) instr))
+
+(deftest connection-stubs
+  (let [opts {:size "310UB40.4" :support-size "200UC46.2"}]
+    (testing "a plain cut: 600 of the beam; the column its 304 deep plus 300 clear"
+      (is (= {:owner 600 :support 700} (update (:stubs (stubs (te/blank :connection) opts)) :support long)))
+      (is (= {:owner 600 :support 600}
+             (update (:stubs (stubs (te/blank :connection) {:size "200UB18.2" :support-size "200UC46.2"})) :support long))))
+    (testing "an end plate on a 310UB: about 600 of the beam, the column a little past the plate"
+      (let [{:keys [stubs instructions]} (stubs (:end-plate templates) opts)
+            owner (:owner instructions)
+            main (part owner :main)]
+        (is (= 600 (:owner stubs)))
+        (is (<= 600 (:support stubs) 800))
+        (testing "the beam's main part is sliced square at the stub's end, its XLine shortened"
+          (is (= :slice (:op main)))
+          (is (:slice/clip? main))
+          (is (= 600.0 (double (some #(get-in % [:child :length]) (get-in owner [:child :children]))))))
+        (testing "the plate and bolts are as they were"
+          (is (= :subtract (:op (part owner :end/plate))))
+          (is (= 4 (get-in (part owner :end/bolts) [:part/size :count]))))))
+    (testing "a detail reaching 900 in along the owner: a stub of 1200 at least"
+      (let [long-end {:template/kind :connection :template/name "Long" :template/params {:reach 900}
+                      :template/parts [{:prim/id :cut :prim/type :cut :prim/place {:at :support-face}}
+                                       {:prim/id :detail :prim/type ::long-detail}]}]
+        (is (<= 1200 (get-in (stubs long-end opts) [:stubs :owner])))))
+    (testing "a wide plate on the support makes its stub longer"
+      (let [wide (update (:end-plate templates) :template/parts prim/update-prim :plate
+                         assoc-in [:prim/params :shape :rect 1] "(+ d 800)")
+            {s :stubs} (stubs wide opts)]
+        (is (<= 1400 (:support s)))
+        (is (= 600 (:owner s)))))
+    (testing "a joist into a beam: the beam's stub runs across the joist, centred on it"
+      (let [{s :stubs is :instructions} (stubs (:end-plate templates) {:size "250UB31.4" :support-size "460UB82.1"
+                                                                      :arrangement :beam})
+            [z0 z1] (z-range (:support is))]
+        (is (= {:owner 600 :support 600} s))
+        (is (v/nearly= 2000.0 (/ (+ z0 z1) 2.0) 1e-6) "centred on the node, 2000 along the beam")))))
+
+(deftest instance-connection-stubs
+  (let [{m :model} (construcad.edits-test/seeded)
+        b2 (construcad.edits-test/by-mark m "B2")
+        {:keys [state context]} (edits/assembly-page m b2)
+        column (get-in state [:supports :end])
+        draft (template/copy->template (:end state))
+        full (te/connection-instance-preview lib (:templates m) context state :end draft)
+        {:keys [instructions stubs]} (te/stub-preview full b2 :end column)]
+    (is (= 600 (:owner stubs)))
+    (is (<= 600 (:support stubs) 800))
+    (testing "the start end is gone; the end's connection and the column's holes are as they were"
+      (is (nil? (part (get instructions b2) :start/plate)))
+      (is (= (part (get-in full [:instructions b2]) :end/plate) (part (get instructions b2) :end/plate)))
+      (is (= (count (:tools (part (get-in full [:instructions column]) :main)))
+             (count (:tools (unclipped (part (get instructions column) :main)))))))))
+
+(deftest clipped-cuts
+  (testing "a cut left outside the stub is not drawn; the one at the connection is"
+    (let [{m :model} (construcad.edits-test/seeded)
+          b2 (construcad.edits-test/by-mark m "B2")
+          {:keys [state context]} (edits/assembly-page m b2)
+          column (get-in state [:supports :end])
+          full (te/connection-instance-preview lib (:templates m) context state :end (template/copy->template (:end state)))
+          main (part (get-in (te/stub-preview full b2 :end column) [:instructions b2]) :main)
+          drawn (fn drawn [i] (when (= :slice (:op i))
+                                (cond-> (drawn (:target i)) (not (:slice/clip? i)) (conj (:cut/prim i)))))]
+      (is (= [:cut] (drawn main))))))

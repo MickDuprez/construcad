@@ -16,6 +16,7 @@
             [modeller.assembly :as assembly]
             [modeller.core :as core]
             [modeller.frame :as frame]
+            [modeller.instr :as instr]
             [modeller.params :as params]
             [modeller.prim :as prim]
             [modeller.profile :as profile]
@@ -237,7 +238,8 @@
                               [(beam :support {:node/at [0 -2000 z]} {:node/at [0 2000 z]} support-size)
                                {:node/on :support :node/station 2000}]
                               [(column :support 0 support-size) {:node/of :support :node/end :end}])
-        m (-> (base-model lib templates [support (beam :owner {:node/at [-1500 0 z]} owner-end size)] settings)
+        ;; long enough to measure a deep end detail; the editor shows a stub of it (stub-preview)
+        m (-> (base-model lib templates [support (beam :owner {:node/at [-6000 0 z]} owner-end size)] settings)
               ;; the joint holds a copy of the draft, as a real connection does
               (assoc :connections {:joint (merge {:connection/id :joint :connection/owner :owner :connection/end :end
                                                   :connection/refs [:support]}
@@ -415,6 +417,112 @@
          :errors errors
          :model (:model r)
          :detail (when conn (assembly/connection-detail (:model r) resolved (:connection/id conn)))}))))
+
+;; --- stubs: the connection editor's short members ---------------------------------------
+
+(def stub-min "The shortest stub of a member the connection editor shows." 600)
+(def stub-clear "Clear member kept past the connection's own extent." 300)
+
+(defn stub-length
+  "A stub long enough for a connection reaching `extent` along the member:
+  that plus a clear length, at least stub-min, rounded up to 100 mm."
+  [extent]
+  (max stub-min (* 100 (long (Math/ceil (- (/ (+ extent stub-clear) 100.0) 1e-9))))))
+
+(defn support-window
+  "The stub of the support to show, [z0 z1] along its XLine, for a
+  connection spanning `lo` to `hi` along it: stub-length of that span,
+  centred on it."
+  [lo hi]
+  (let [l (stub-length (- hi lo))
+        mid (/ (+ lo hi) 2.0)]
+    [(- mid (/ l 2.0)) (+ mid (/ l 2.0))]))
+
+(defn- children [instr] (get-in instr [:child :children]))
+
+(defn- xline-length [instr] (some #(when (= :xline (:op %)) (:length %)) (children instr)))
+
+(defn- corners [{[x0 y0 z0] :min [x1 y1 z1] :max}]
+  (for [x [x0 x1] y [y0 y1] z [z0 z1]] [x y z]))
+
+(defn support-span
+  "How far the connection at `end` of the owner (its instruction
+  `owner-instr`, main part `main-id`) reaches along the support's XLine
+  (frame `support-frame`): the end's own parts (plates, gussets, bolts) and
+  the owner's section at the node, projected on to it. [lo hi] in the
+  support's local Z."
+  [owner-instr end main-id support-frame]
+  (let [length (xline-length owner-instr)
+        node-z (if (= :start end) 0 length)
+        f (:frame owner-instr)
+        pts (for [p (children owner-instr)
+                  :let [id (:id p) b (when (not= :xline (:op p)) (bbox p))]
+                  :when b
+                  c (cond (= main-id id) (corners (-> b (assoc-in [:min 2] node-z) (assoc-in [:max 2] node-z)))
+                          (and (keyword? id) (= (name end) (namespace id))) (corners b))]
+              (nth (frame/point->local support-frame (frame/point->parent f c)) 2))]
+    (if (seq pts)
+      [(reduce min pts) (reduce max pts)]
+      (let [z (nth (frame/point->local support-frame (frame/point->parent f [0 0 node-z])) 2)] [z z]))))
+
+(defn- quiet-cuts-outside
+  "A part with the cuts wrapped round it that lie wholly outside [z0 z1]
+  marked :slice/clip?, so their planes are not drawn where the part no
+  longer is."
+  [p z0 z1]
+  (case (:op p)
+    :slice (let [;; this plane's span, after those of the cuts inside it
+                 span (first (drop (count (cut-spans (:target p))) (cut-spans p)))]
+             (cond-> (update p :target quiet-cuts-outside z0 z1)
+               (and span (or (<= (span 1) z0) (>= (span 0) z1))) (assoc :slice/clip? true)))
+    :subtract (update p :target quiet-cuts-outside z0 z1)
+    p))
+
+(defn clip-member
+  "A member's instruction cut down to [z0 z1] along its XLine: parts
+  wholly outside go, parts across an end are sliced square there (the slice
+  marked :slice/clip?, so no cut plane is drawn for it), cuts left outside
+  are no longer drawn, and its XLine shortens to match."
+  [instr [z0 z1]]
+  (let [ends [[[0 0 z0] [0 0 1]] [[0 0 z1] [0 0 -1]]]
+        clip (fn [p]
+               (if (= :xline (:op p))
+                 (let [a (max 0 z0) b (min (:length p) z1)]
+                   (when (< a b)
+                     (instr/transform {:o [0 0 a] :x [1 0 0] :y [0 1 0] :z [0 0 1]} (assoc p :length (- b a)))))
+                 (if-let [{[_ _ pz0] :min [_ _ pz1] :max} (bbox p)]
+                   (cond
+                     (or (<= pz1 z0) (>= pz0 z1)) nil
+                     (and (>= pz0 z0) (<= pz1 z1)) p
+                     :else (merge (select-keys p [:id :part/kind :part/size])
+                                  (reduce (fn [t [o n]] (assoc (instr/slice t {:origin o :normal n} :positive) :slice/clip? true))
+                                          (quiet-cuts-outside (dissoc p :id :part/kind :part/size) z0 z1)
+                                          (filter (fn [[[_ _ z] [_ _ nz]]] (if (pos? nz) (> z pz0) (< z pz1))) ends))))
+                   p)))]
+    (update-in instr [:child :children] #(vec (keep clip %)))))
+
+(defn stub-preview
+  "A connection preview (connection-preview's or connection-instance-
+  preview's) with the owner and the support cut down to short stubs about
+  the connection: the owner back from its node by stub-length of the end's
+  reach (end-extents), the support by support-window of the connection's
+  span along it. Both are the real result, sliced, so holes and the
+  connection are as they would be. Adds :stubs {:owner mm :support mm}."
+  [{:keys [instructions model] :as preview} owner-id end support-id]
+  (let [owner (get instructions owner-id)
+        support (get instructions support-id)
+        length (some-> owner xline-length)]
+    (if-not (and owner length)
+      preview
+      (let [main-id (:part/id (first (get-in model [:xlines owner-id :assembly/parts])) :main)
+            reach (get (end-extents owner length main-id) end)
+            l (min length (stub-length reach))
+            [lo hi] (when support (support-span owner end main-id (:frame support)))
+            window (when support (support-window lo hi))]
+        (cond-> (assoc-in preview [:instructions owner-id]
+                          (clip-member owner (if (= :start end) [0 l] [(- length l) length])))
+          support (assoc-in [:instructions support-id] (clip-member support window))
+          true (assoc :stubs {:owner l :support (when window (- (window 1) (window 0)))}))))))
 
 (def member-space
   "Where the assembly page shows a member: its XLine along +X from the

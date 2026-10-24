@@ -657,13 +657,16 @@
         size (if instance? (:assembly/size state) (:size dlg))
         support-size (if instance? (or (get-in supports [end :size]) (size-of context support-id)) (:support-size dlg))
         context (when context (assoc context :settings (stored-settings)))
+        ;; the owner and support as short stubs about the connection
         preview-of (fn [arr]
                      (if instance?
-                       (te/connection-instance-preview @lib (:templates @env*) context state end draft)
-                       (te/connection-preview @lib (:templates @env*) draft
-                                              {:size size :support-size support-size :arrangement arr
-                                               :settings (stored-settings)})))
-        {:keys [instructions errors nodes detail]} (preview-of arrangement)
+                       (te/stub-preview (te/connection-instance-preview @lib (:templates @env*) context state end draft)
+                                        (:xline/id state) end support-id)
+                       (te/stub-preview (te/connection-preview @lib (:templates @env*) draft
+                                                               {:size size :support-size support-size :arrangement arr
+                                                                :settings (stored-settings)})
+                                        :owner :end :support)))
+        {:keys [instructions errors nodes detail stubs]} (preview-of arrangement)
         resolved (te/resolve-for @lib draft {} (when (string? size) size) support-size (stored-settings))
         iso (if instance? (second (first (te/preview-views nodes))) [1 -1.4 0.9])
         host (preview-host! iso)
@@ -678,7 +681,10 @@
         other-errors (remove #(or (:param %) (:prim/id %)) errors)
         bad (set (map :prim/id prim-errors))
         n-params (count (:template/params draft))]
-    (show! instructions detail)
+    ;; framed again when the stubs change length (another size, a longer gusset)
+    (let [refit? (and stubs (not= stubs (get-in @ui* [:preview :stubs])))]
+      (when refit? (swap! ui* assoc-in [:preview :stubs] stubs))
+      (show! instructions detail :fit? refit?))
     (h :div {:class "dialog connection-editor"}
        (h :header {}
           (h :h2 {} (cond
@@ -731,7 +737,7 @@
                   (str (:assembly/mark state) (when (string? size) (str ", " size)) " into "
                        (get-in supports [end :assembly/mark] "its support")
                        (when support-size (str ", " support-size))
-                       ", where they are in the model, as Save would make them."))
+                       ", where they are in the model, as Save would make them, cut short about the connection."))
                (h :div {:class "preview-setup"}
                   (h :label {} (h :span {:class "muted small"} "Owner ")
                      (size-select "size" size #(update-top! assoc :size %)))
@@ -741,7 +747,8 @@
                      (select-of "arrangement" (name arrangement)
                                 (map (fn [[k l]] [(name k) l]) te/arrangements)
                                 #(let [arr (keyword %)
-                                       {:keys [instructions detail]} (preview-of arr)]
+                                       {:keys [instructions detail stubs]} (preview-of arr)]
+                                   (swap! ui* assoc-in [:preview :stubs] stubs)
                                    (update-top! assoc :arrangement arr)
                                    (show! instructions detail :fit? true))))))
              (h :div {:class "row"}

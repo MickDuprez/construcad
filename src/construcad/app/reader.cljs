@@ -126,7 +126,8 @@
                  (.applyMatrix4 g m))
     :group (merge-soup (keep #(when (not= :xline (:op %)) (solid-geometry %)) (:children instr)))
     :slice (let [^js target (solid-geometry (:target instr))]
-             (record-cut! target instr)
+             ;; a preview's clip to a stub (construcad.template-edit/clip-member) is no cut
+             (when-not (:slice/clip? instr) (record-cut! target instr))
              (slice/slice target (:plane instr) (:keep instr)))
     :subtract (csg instr SUBTRACTION (map solid-geometry (cons (:target instr) (:tools instr))))
     :union (csg instr ADDITION (map solid-geometry (:solids instr)))
