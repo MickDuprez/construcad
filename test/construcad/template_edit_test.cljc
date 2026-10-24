@@ -5,9 +5,11 @@
             [construcad.seed :as seed]
             [construcad.template-edit :as te]
             [modeller.assembly :as assembly]
+            [modeller.connection :as connection]
             [modeller.frame :as frame]
             [modeller.instr :as instr]
             [modeller.library :as library]
+            [modeller.prim :as prim]
             [modeller.sections-au :as au]
             [modeller.template :as template]
             [modeller.vec :as v]))
@@ -66,8 +68,8 @@
                                                              {:size "310UB40.4" :support-size "200UC46.2"})
         beam (:owner instructions)]
     (is (empty? errors))
-    (is (= :subtract (:op (part beam :plate-end))))
-    (is (= 4 (get-in (part beam :bolts-end) [:part/size :count]))))
+    (is (= :subtract (:op (part beam :end/plate))))
+    (is (= 4 (get-in (part beam :end/bolts) [:part/size :count]))))
   (testing "a new draft (no id yet) previews too, and formula errors name the parameter"
     (let [draft (assoc-in (dissoc (:end-plate templates) :template/id) [:template/params :plate-h] "(+ d")
           {:keys [errors]} (te/connection-preview lib templates draft {:size "310UB40.4" :support-size "200UC46.2"})]
@@ -82,15 +84,15 @@
       (is (empty? errors))
       (is (= #{:member} (set (keys instructions))))
       (is (part member :main))
-      (is (part member :plate-start))
-      (is (part member :plate-end))
+      (is (part member :start/plate))
+      (is (part member :end/plate))
       (testing "the XLine's nodes, for the preview to mark"
         (is (= [[0.0 0.0 3000.0] [1200.0 0.0 3000.0]] (mapv #(mapv double %) nodes))))))
   (testing "a plain end is left as it is"
     (let [{:keys [instructions]} (te/assembly-preview lib templates (dissoc (:beam-plates templates) :template/end)
                                                       {:size "250UB31.4"})]
-      (is (part (:member instructions) :plate-start))
-      (is (nil? (part (:member instructions) :plate-end)))))
+      (is (part (:member instructions) :start/plate))
+      (is (nil? (part (:member instructions) :end/plate)))))
   (testing "a column template stands alone"
     (let [{:keys [instructions errors]} (te/assembly-preview lib templates (:column templates) {:size "200UC46.2"})]
       (is (empty? errors))
@@ -98,18 +100,20 @@
 
 ;; A stand-in for a long end detail (a deep haunch, say): a box reaching
 ;; :reach in from the member's node along its XLine.
-(defmethod assembly/apply-action ::long-detail [{:keys [params conn owner-length]} _ parts]
+(defmethod connection/apply-prim ::long-detail [{:keys [params end owner-length]} _ st]
   (let [reach (get params :reach 1500)
-        id (keyword (str "detail-" (name (:connection/end conn))))
-        z0 (if (= :start (:connection/end conn)) 0 (- owner-length reach))]
-    (assoc parts id (assoc (instr/transform {:o [0 0 z0] :x [1 0 0] :y [0 1 0] :z [0 0 1]}
-                                            (instr/box [100 100 reach]))
-                           :id id :part/kind :plate))))
+        id (keyword (str "detail-" (name end)))
+        z0 (if (= :start end) 0 (- owner-length reach))]
+    (-> st
+        (assoc-in [:parts id] (assoc (instr/transform {:o [0 0 z0] :x [1 0 0] :y [0 1 0] :z [0 0 1]}
+                                                      (instr/box [100 100 reach]))
+                                     :id id :part/kind :plate))
+        (update :added conj id))))
 
 (deftest sample-lengths
   (let [plain {:template/kind :assembly :template/name "Plain" :template/main te/default-main}
         long-end {:template/id :long-end :template/kind :connection :template/name "Long"
-                  :template/params {:reach 1500} :template/actions [{:action/type ::long-detail}]}
+                  :template/params {:reach 1500} :template/parts [{:prim/id :detail :prim/type ::long-detail}]}
         templates (assoc templates :long-end long-end)]
     (testing "plain ends: the shortest sample"
       (is (= 1200 (te/preview-length lib templates plain "310UB40.4"))))
@@ -155,7 +159,7 @@
   (testing "an assembly template's end names a library connection template"
     (let [info (te/end-info templates {:connection/template :end-plate})]
       (is (= "End plate, 4 bolts" (:name info)))
-      (is (= [:end-plate :bolt-group] (:actions info)))
+      (is (= [:cut :plate :hole-group] (:parts info)))
       (is (:library? info))
       (is (= :end-plate (get-in info [:from :template/id])))))
   (testing "an assembly's end is its own copy, which says where it came from"
@@ -182,8 +186,8 @@
       (is (= #{b2 column} (set (keys instructions))))
       (is (= 2 (count nodes))))
     (testing "the draft is this end's: six bolts at the end, four at the start"
-      (is (= 6 (get-in (part (get instructions b2) :bolts-end) [:part/size :count])))
-      (is (= 4 (get-in (part (get instructions b2) :bolts-start) [:part/size :count])))
+      (is (= 6 (get-in (part (get instructions b2) :end/bolts) [:part/size :count])))
+      (is (= 4 (get-in (part (get instructions b2) :start/bolts) [:part/size :count])))
       (is (= 6 (count (:tools (part (get instructions column) :main))))))))
 
 (deftest size-pickers
@@ -220,8 +224,8 @@
         owner (:owner instructions)]
     (is (empty? errors))
     (is (= #{:owner :support} (set (keys instructions))))
-    (is (part owner :plate-end))
-    (is (= 4 (get-in (part owner :bolts-end) [:part/size :count])))))
+    (is (part owner :end/plate))
+    (is (= 4 (get-in (part owner :end/bolts) [:part/size :count])))))
 
 (deftest saving-the-assembly-page
   (let [state {:xline/id :b1 :assembly/size "310UB40.4" :main {:part/insert :centre}}]
@@ -230,3 +234,69 @@
            (te/save-edits state {:rotation 0 :rotation-was 0})))
     (is (= [{:edit/type :xline/set-rotation :xline/id :b1 :rotation 90} :assembly/update]
            (update (te/save-edits state {:rotation 90 :rotation-was 0}) 1 :edit/type)))))
+
+(deftest parts-tree-editing
+  (testing "a new connection template is one cut to the support face"
+    (is (= [:cut] (prim/summary (:template/parts (te/blank :connection))))))
+  (testing "adding parts: fresh ids, sensible defaults, children sit on their parent"
+    (let [{d :draft plate :id} (te/add-part (te/blank :connection) nil :plate)
+          {d :draft holes :id} (te/add-part d plate :hole-group)
+          {d :draft snipe :id} (te/add-part d plate :cut)]
+      (is (= [:plate-1 :hole-group-1 :cut-1] [plate holes snipe]))
+      (is (= {:at :support-face} (:prim/place (prim/find-prim (:template/parts d) plate))))
+      (is (= {:at :parent} (:prim/place (prim/find-prim (:template/parts d) holes))))
+      (is (= [:parent] (get-in (prim/find-prim (:template/parts d) holes) [:prim/params :through])))
+      (is (= :parent (get-in (prim/find-prim (:template/parts d) snipe) [:prim/params :target])))
+      (testing "and the draft previews"
+        (let [{:keys [instructions errors detail]} (te/connection-preview lib templates d {:size "310UB40.4" :support-size "200UC46.2"})]
+          (is (empty? errors))
+          (is (= 4 (count (:tools (:target (part (:owner instructions) :end/plate-1))))))
+          (is (= :end/plate-1 (get-in detail [:outputs :plate-1])))
+          (is (= :end/hole-group-1 (get-in detail [:outputs :hole-group-1])))
+          (is (= #{:cut :plate-1 :hole-group-1 :cut-1} (set (keys (:frames detail)))))))))
+  (testing "an old action-list template opens as its tree"
+    (let [old {:template/kind :connection :template/name "Old" :template/params {:gap 3}
+               :template/actions [{:action/type :cut-to-face}]}]
+      (is (= [:cut] (prim/summary (:template/parts (te/as-draft old)))))
+      (is (not (contains? (te/as-draft old) :template/actions)))
+      (is (= [:cut] (prim/summary (:template/parts (te/duplicate old)))))))
+  (testing "values and polygons as typed"
+    (is (= "plate-t" (te/value-text :plate-t)))
+    (is (= "(+ d 20)" (te/value-text "(+ d 20)")))
+    (is (= [[0 0] [100 0] [0 "h"]] (te/parse-polygon "0,0  100,0; 0,h")))
+    (is (nil? (te/parse-polygon "0,0 100,0")))
+    (is (nil? (te/parse-polygon "0,0 100 0,50")))
+    (is (= "0,0  100,0  0,h" (te/polygon-text [[0 0] [100 0] [0 "h"]])))))
+
+(deftest end-plate-with-gussets-from-primitives
+  (let [draft (-> (te/blank :connection)
+                  (assoc :template/name "End plate with 2 gussets"
+                         :template/params {:gap 0 :t 12 :gt 10 :gh 80})
+                  (assoc :template/parts
+                         [{:prim/id :cut :prim/type :cut :prim/place {:at :support-face :offset [0 0 "(+ gap t)"]}}
+                          {:prim/id :plate :prim/type :plate :prim/place {:at :support-face :offset [0 0 :gap]}
+                           :prim/params {:t :t :shape {:rect ["bf" "(+ d 200)"]}}
+                           :prim/children
+                           [{:prim/id :bolts :prim/type :hole-group
+                             :prim/params {:rows 2 :cols 2 :pitch "(+ d 100)" :through [:parent :support] :bolts? true}}
+                            {:prim/id :top :prim/type :gusset :prim/place {:offset [0 "(/ d 2)" :t] :rotation 90}
+                             :prim/params {:w 100 :h :gh :t :gt}}
+                            {:prim/id :bottom :prim/type :gusset :prim/place {:offset [0 "(- (/ d 2))" :t] :rotation 270}
+                             :prim/params {:w 100 :h :gh :t :gt}}]}]))
+        {:keys [instructions errors]} (te/connection-preview lib templates draft {:size "310UB40.4" :support-size "200UC46.2"})
+        parts (into {} (map (juxt :id identity)) (get-in instructions [:owner :child :children]))
+        owner-frame (get-in instructions [:owner :frame])
+        world (fn [id local] (frame/point->parent (frame/compose owner-frame (get-in parts [id :frame])) local))]
+    (is (empty? errors))
+    (is (= #{:end/plate :end/bolts :end/top :end/bottom} (set (filter #(and (keyword? %) (namespace %)) (keys parts)))))
+    (testing "the gussets stand on the plate's outer face, above and below the beam, along it"
+      ;; the owner runs along +X to the column at x = 0, its top at z = 3000
+      (let [root (world :end/top [0 0 0])
+            tip (world :end/top [100 0 0])
+            heel (world :end/top [0 80 0])]
+        (is (v/nearly= 3000.0 (root 2) 1e-6) "its root at the top of the beam")
+        (is (v/nearly= 3100.0 (tip 2) 1e-6) "up the plate")
+        (is (v/nearly= (- (root 0) 80) (heel 0) 1e-6) "and back along the beam"))
+      (is (v/nearly= 2696.0 ((world :end/bottom [0 0 0]) 2) 1e-6) "the bottom one at the underside, 304 down")
+      (is (v/nearly= 2596.0 ((world :end/bottom [100 0 0]) 2) 1e-6)))
+    (is (= 4 (get-in parts [:end/bolts :part/size :count])))))

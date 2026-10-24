@@ -32,8 +32,8 @@
     (testing "B2 is copied from the end plate template, with plates and bolts"
       (is (= "Beam, end plates both ends"
              (get-in m [:xlines (by-mark m "B2") :assembly/from-template :template/name])))
-      (is (every? :connection/actions (vals (:connections m))) "every seeded connection holds its own copy")
-      (is (= [:b-2-xline :main :bolts-end :bolts-start :plate-end :plate-start]
+      (is (every? :connection/parts (vals (:connections m))) "every seeded connection holds its own copy, a tree")
+      (is (= [:b-2-xline :main :start/plate :start/bolts :end/plate :end/bolts]
              (map #(if (= :xline (:op %)) :b-2-xline (:id %))
                   (get-in view [:instructions (by-mark m "B2") :child :children])))))
     (is (empty? (:errors view)))
@@ -204,8 +204,29 @@
                                         :template/main {:part/insert :top-centre}
                                         :template/start {:connection/template ep}}})]
         (is (= [[:template id]] (:writes p)))))
-    (testing "refused: unknown action, another project's template id, missing connection template"
-      (is (= :unknown-action
+    (testing "an old action list is stored as its tree"
+      (let [id (random-uuid)
+            p (edits/plan m {:edit/type :template/save :new-id (constantly id)
+                             :template {:template/kind :connection :template/name "Old"
+                                        :template/params {:gap 5}
+                                        :template/actions [{:action/type :cut-to-face}]}})
+            t (get-in p [:model :templates id])]
+        (is (= :cut (get-in t [:template/parts 0 :prim/type])))
+        (is (not (contains? t :template/actions)))))
+    (testing "refused: unknown action or prim, another project's template id, missing connection template"
+      (is (= :unknown-type
+             (get-in (edits/plan m {:edit/type :template/save
+                                    :template {:template/kind :connection :template/name "x"
+                                               :template/parts [{:prim/id :w :prim/type :weld-everything}]}})
+                     [:error :reason])))
+      (is (= :duplicate-id
+             (get-in (edits/plan m {:edit/type :template/save
+                                    :template {:template/kind :connection :template/name "x"
+                                               :template/parts [{:prim/id :c :prim/type :cut}
+                                                                {:prim/id :p :prim/type :plate
+                                                                 :prim/children [{:prim/id :c :prim/type :cut}]}]}})
+                     [:error :reason])))
+      (is (= :unknown-type
              (get-in (edits/plan m {:edit/type :template/save
                                     :template {:template/kind :connection :template/name "x"
                                                :template/actions [{:action/type :weld-everything}]}})
@@ -248,7 +269,7 @@
         b1 (by-mark m "B1") b2 (by-mark m "B2")
         c (some #(when (and (= b2 (:connection/owner %)) (= :end (:connection/end %))) %) (vals (:connections m)))
         column (first (:connection/refs c))
-        copy (assoc (select-keys c [:connection/name :connection/actions :connection/params])
+        copy (assoc (select-keys c [:connection/name :connection/parts :connection/params])
                     :connection/params (assoc (:connection/params c) :plate-t 20 :rows 3))
         p (edits/plan m {:edit/type :connection/update :connection/id (:connection/id c) :xline/id b2
                          :connection copy})
@@ -262,9 +283,9 @@
       (is (not (contains? (:upsert patch) b1))))
     (testing "B2's end plate takes the new copy; its start and the library do not change"
       (let [part (fn [id] (some #(when (= id (:id %)) %) (get-in patch [:upsert b2 :child :children])))]
-        (is (= 20 (get-in (part :plate-end) [:part/size :t])))
-        (is (= 6 (get-in (part :bolts-end) [:part/size :count])))
-        (is (= 12 (get-in (part :plate-start) [:part/size :t]))))
+        (is (= 20 (get-in (part :end/plate) [:part/size :t])))
+        (is (= 6 (get-in (part :end/bolts) [:part/size :count])))
+        (is (= 12 (get-in (part :start/plate) [:part/size :t]))))
       (is (= (:templates m) (:templates (:model p)))))
     (testing "the column is drilled for six bolts from this end"
       (let [col (some #(when (= :subtract (:op %)) %) (get-in patch [:upsert column :child :children]))]
@@ -278,9 +299,40 @@
                                         :xline/id b2 :connection copy} %))]
         (is (= :edit/not-the-owner (get-in (plan {:xline/id b1}) [:error :error/type])))
         (is (= :edit/unknown-connection (get-in (plan {:connection/id (random-uuid)}) [:error :error/type])))
-        (is (= :unknown-action (get-in (plan {:connection (assoc copy :connection/actions [{:action/type :glue}])})
-                                       [:error :reason])))
-        (is (= :no-actions (get-in (plan {:connection (assoc copy :connection/actions [])}) [:error :reason])))))))
+        (is (= :unknown-type (get-in (plan {:connection (assoc copy :connection/parts [{:prim/id :g :prim/type :glue}])})
+                                     [:error :reason])))
+        (is (= :no-parts (get-in (plan {:connection (assoc copy :connection/parts [])}) [:error :reason])))
+        (is (= :no-parts (get-in (plan {:connection (dissoc copy :connection/parts)}) [:error :reason])))))))
+
+(deftest updating-a-connection-with-a-parts-tree
+  (let [{m :model building :building} (seeded)
+        b2 (by-mark m "B2")
+        c (some #(when (and (= b2 (:connection/owner %)) (= :end (:connection/end %))) %) (vals (:connections m)))
+        column (first (:connection/refs c))
+        tree [{:prim/id :cut :prim/type :cut :prim/place {:at :support-face :offset [0 0 12]}}
+              {:prim/id :plate :prim/type :plate :prim/place {:at :support-face}
+               :prim/params {:t 12 :shape {:rect ["bf" "(+ d 200)"]}}
+               :prim/children [{:prim/id :bolts :prim/type :hole-group
+                                :prim/params {:rows 3 :cols 2 :pitch 100 :through [:parent :support] :bolts? true}}
+                               {:prim/id :g1 :prim/type :gusset :prim/place {:offset [0 "(/ d 2)" 12] :rotation 90}}]}]
+        p (edits/plan m {:edit/type :connection/update :connection/id (:connection/id c) :xline/id b2
+                         :connection {:connection/name "Plate and gusset" :connection/params {}
+                                      :connection/parts tree}})
+        patch (edits/patch m p)
+        part (fn [id] (some #(when (= id (:id %)) %) (get-in patch [:upsert b2 :child :children])))]
+    (is (nil? (:error p)))
+    (is (= tree (get-in p [:model :connections (:connection/id c) :connection/parts])))
+    (testing "B2's end is made from the tree"
+      (is (= {:t 12 :w 165.0 :h 504.0} (:part/size (part :end/plate))))
+      (is (= :plate (:part/kind (part :end/g1))))
+      (is (= 6 (get-in (part :end/bolts) [:part/size :count]))))
+    (testing "and the column it bolts into is drilled for six"
+      (let [col (some #(when (= :subtract (:op %)) %) (get-in patch [:upsert column :child :children]))]
+        (is (= 6 (count (:tools col))))))
+    (testing "the stored document holds the tree"
+      (let [[doc] (records/write-docs building (:model p) (:writes p))]
+        (is (= tree (:connection/parts doc)))
+        (is (not (contains? doc :connection/actions)))))))
 
 (deftest reapplying-from-the-library
   (let [{m :model} (seeded)
@@ -328,7 +380,7 @@
       (let [{:keys [instructions]} (te/instance-preview lib (:templates m) context
                                                         (assoc state :assembly/size "250UB31.4" :start nil))
             parts (set (map :id (get-in instructions [b2 :child :children])))]
-        (is (not (contains? parts :plate-start)))))))
+        (is (not (contains? parts :start/plate)))))))
 
 (deftest a-supports-page-shows-the-holes-others-bolt-into-it
   (let [{m :model} (seeded)

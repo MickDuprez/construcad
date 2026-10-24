@@ -17,6 +17,7 @@
             [modeller.core :as core]
             [modeller.frame :as frame]
             [modeller.params :as params]
+            [modeller.prim :as prim]
             [modeller.profile :as profile]
             [modeller.template :as template]
             [modeller.vec :as v]))
@@ -30,20 +31,29 @@
   (case kind
     :connection {:template/kind :connection :template/name "New connection"
                  :template/params (array-map :gap 10)
-                 :template/actions [{:action/type :cut-to-face :action/face :auto}]}
+                 :template/parts [{:prim/id :cut :prim/type :cut :prim/name "Cut to face"
+                                   :prim/place {:at :support-face :offset [0 0 :gap]}}]}
     :assembly {:template/kind :assembly :template/name "New assembly" :template/role :beam
                :template/main default-main}))
+
+(defn as-draft
+  "A template as the editors hold it: a connection template's old action
+  list read as its tree of parts."
+  [t]
+  (if (and (= :connection (:template/kind t)) (not (contains? t :template/parts)))
+    (-> t (assoc :template/parts (prim/template-parts t)) (dissoc :template/actions))
+    t))
 
 (defn duplicate
   "A copy of a template that saves as a new one."
   [t]
-  (-> t (dissoc :template/id) (update :template/name #(str % " (copy)"))))
+  (-> (as-draft t) (dissoc :template/id :template/thumbnail) (update :template/name #(str % " (copy)"))))
 
 (defn draft-errors
   "What stops a draft being saved, as messages; empty when it can be."
-  [{:template/keys [kind name actions params]}]
+  [{:template/keys [kind name parts params]}]
   (concat (when (str/blank? name) ["Give the template a name."])
-          (when (and (= :connection kind) (empty? actions)) ["A connection template needs at least one action."])
+          (when (and (= :connection kind) (empty? parts)) ["A connection needs at least one part."])
           (for [[k v] params :when (nil? v)] (str "Parameter " (clojure.core/name k) " has no value."))))
 
 (defn move [v i delta]
@@ -90,6 +100,52 @@
   (let [t (str/trim (str text))]
     (when (re-matches #"[a-zA-Z][a-zA-Z0-9-]*" t) (keyword t))))
 
+;; --- the parts tree -------------------------------------------------------------------
+
+(defn value-text
+  "A prim value as the editor shows it: a parameter name without its colon."
+  [v]
+  (cond (nil? v) "" (keyword? v) (name v) :else (str v)))
+
+(defn prim-defaults
+  "A new prim of `type`: its name, placement and parameters. A child sits
+  on its parent; a top-level prim on the support face."
+  [type child?]
+  (let [place (if child? {:at :parent} {:at :support-face})]
+    (case type
+      :cut {:prim/name "Cut" :prim/place (assoc place :offset [0 0 0])
+            :prim/params (if child? {:target :parent :plane :xz :gap 0} {:gap 0})}
+      :plate {:prim/name "Plate" :prim/place place
+              :prim/params {:t 10 :shape {:rect ["bf" "d"]}}}
+      :gusset {:prim/name "Gusset" :prim/place place :prim/params {:w 100 :h 100 :t 10}}
+      :hole-group {:prim/name "Holes" :prim/place place
+                   :prim/params {:rows 2 :cols 2 :gauge 90 :pitch 70 :bolt-dia 20
+                                 :through (if child? [:parent] [:support]) :bolts? true}}
+      {:prim/name (prim/type-label type) :prim/place place :prim/params {}})))
+
+(defn add-part
+  "The draft with a new prim of `type` added under `parent-id` (nil: at
+  the top level). {:draft d :id new-id}."
+  [draft parent-id type]
+  (let [parts (vec (:template/parts draft))
+        id (prim/fresh-id parts type)
+        p (merge {:prim/id id :prim/type type} (prim-defaults type (some? parent-id)))]
+    {:draft (assoc draft :template/parts (prim/add-prim parts parent-id p)) :id id}))
+
+(defn polygon-text [pts]
+  (str/join "  " (map (fn [[x y]] (str (value-text x) "," (value-text y))) pts)))
+
+(defn parse-polygon
+  "Typed polygon points, \"0,0  100,0  0,50\" (pairs split by spaces or
+  semicolons, a pair by a comma), each a number, parameter name or formula
+  without spaces. nil unless there are at least three."
+  [text]
+  (let [pairs (remove str/blank? (str/split (str/trim (str text)) #"[;\s]+"))
+        pts (for [p pairs :let [xy (str/split p #",")]]
+              (when (= 2 (count xy)) [(parse-param (first xy)) (parse-param (second xy))]))]
+    (when (and (>= (count pts) 3) (every? #(and % (every? some? %)) pts))
+      (vec pts))))
+
 (defn section-data [lib size] (get-in lib [:sections size :section/data]))
 
 (defn resolve-for
@@ -102,21 +158,21 @@
                          (section-data lib support-size)))
 
 (defn end-info
-  "What an end's card shows: the connection's name, its actions in order,
+  "What an end's card shows: the connection's name, its prims' types in order,
   the library template it is (an assembly template's end) or came from (an
   assembly's end, a copy) and that template's thumbnail when the library
   still has it. nil when the end has no connection."
   [templates condition]
   (when condition
     (let [copy (template/connection-copy templates condition)
-          from (if (contains? condition :connection/actions)
+          from (if (assembly/copy? condition)
                  (:connection/from-template condition)
                  (template/provenance (get templates (:connection/template condition))))
           t (get templates (:template/id from))]
       {:name (or (:connection/name copy) (:template/name from) "Unnamed connection")
-       :actions (mapv :action/type (:connection/actions copy))
+       :parts (prim/summary (:connection/parts copy))
        :from from
-       :library? (not (contains? condition :connection/actions))
+       :library? (not (assembly/copy? condition))
        :known? (some? copy)
        :thumbnail (:template/thumbnail t)})))
 
@@ -158,9 +214,6 @@
    :xlines (into {} (map (juxt :xline/id identity)) xlines)
    :connections {}})
 
-(defn- regenerated [m extra]
-  (merge (select-keys (core/regenerate m) [:instructions :errors]) {:model m} extra))
-
 (def arrangements
   "How the connection preview arranges the support, for its picker."
   [[:column "Vertical column"] [:beam "Horizontal beam, framed into at 90°"]])
@@ -169,7 +222,8 @@
   "An owner of `size` running into a support of `support-size`, its end made
   by the draft connection template. The support is a vertical column, or
   with `:arrangement :beam` a horizontal beam the owner meets at 90 degrees
-  at mid-span, tops flush. {:instructions :errors :model}."
+  at mid-span, tops flush. {:instructions :errors :model :detail}, :detail
+  each prim's ECS and part (modeller.assembly/connection-detail)."
   [lib templates draft {:keys [size support-size arrangement]}]
   (let [z column-height
         [support owner-end] (if (= :beam arrangement)
@@ -180,8 +234,10 @@
               ;; the joint holds a copy of the draft, as a real connection does
               (assoc :connections {:joint (merge {:connection/id :joint :connection/owner :owner :connection/end :end
                                                   :connection/refs [:support]}
-                                                 (template/template->copy draft nil))}))]
-    (regenerated m {})))
+                                                 (template/template->copy draft nil))}))
+        {:keys [resolved instructions errors]} (core/regenerate m)]
+    {:instructions instructions :errors errors :model m
+     :detail (assembly/connection-detail m resolved :joint)}))
 
 (defn- member-only
   "The member's own regeneration, nothing around it: its instruction (main
@@ -327,7 +383,8 @@
   template draft, construcad.template-edit's editor shape) in place of its
   own copy: the assembly `state` applied to `context` (as instance-preview)
   and regenerated with what that end sits on, both drawn where they are in
-  the model. {:instructions {id i} :nodes [start end] :errors :model}."
+  the model. {:instructions {id i} :nodes [start end] :errors :model
+  :detail}, :detail as connection-preview's."
   [lib templates context state end draft]
   (let [id (:xline/id state)
         support (get-in state [:supports end])
@@ -341,11 +398,13 @@
     (if (:error r)
       {:instructions {} :nodes [] :errors [(:error r)] :model m}
       (let [{:keys [resolved instructions errors]} (core/regenerate (:model r) (remove nil? [id support]))
-            {:keys [start end]} (get resolved id)]
+            conn (template/existing-connection (:model r) id end)
+            {:keys [start] end-node :end} (get resolved id)]
         {:instructions instructions
-         :nodes (if start [start end] [])
+         :nodes (if start [start end-node] [])
          :errors errors
-         :model (:model r)}))))
+         :model (:model r)
+         :detail (when conn (assembly/connection-detail (:model r) resolved (:connection/id conn)))}))))
 
 (def member-space
   "Where the assembly page shows a member: its XLine along +X from the

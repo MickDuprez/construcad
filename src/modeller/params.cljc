@@ -6,12 +6,17 @@
   Formulas may use numeric parameters, not other formulas."
   (:require [sci.core :as sci]))
 
-(defn- bindings [owner-data support-data numeric]
+(defn bindings
+  "What a formula sees: the owner's section data by name, the numeric
+  parameters by name, and the support's data as `support`."
+  [owner-data support-data numeric]
   (merge (into {} (for [[k v] owner-data :when (number? v)] [(symbol (name k)) v]))
          (into {} (for [[k v] numeric] [(symbol (name k)) v]))
          {'support (or support-data {})}))
 
-(defn- eval-formula [src binds]
+(defn eval-formula
+  "A formula's value with `binds` (see bindings): {:value n} or {:error e}."
+  [src binds]
   (try
     (let [v (sci/eval-string src {:bindings binds :deny '[eval load-string slurp spit]})]
       (if (number? v) {:value v} {:error {:error/type :param/not-a-number :formula src}}))

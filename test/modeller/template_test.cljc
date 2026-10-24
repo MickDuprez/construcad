@@ -6,6 +6,7 @@
             [modeller.frame :as frame]
             [modeller.model :as model]
             [modeller.params :as params]
+            [modeller.prim :as prim]
             [modeller.template :as template]
             [modeller.vec :as v]))
 
@@ -14,6 +15,9 @@
 
 (defn- counter []
   (let [n (atom 0)] #(keyword (str "conn-" (swap! n inc)))))
+
+;; the fixture's library templates are old action lists, read as trees
+(def square-cut-parts (prim/template-parts (get-in fx/model [:templates :square-cut])))
 
 (defn- applied []
   (template/apply-template fx/model :b-2 (get-in fx/model [:templates :tpl/beam-end-plates]) "310UB40.4"
@@ -43,7 +47,8 @@
       (let [c (get-in model [:connections :conn-1])
             t (get-in model [:templates :conn/end-plate])]
         (is (= "End plate, 4 bolts" (:connection/name c)))
-        (is (= (:template/actions t) (:connection/actions c)))
+        (is (= (prim/template-parts t) (:connection/parts c)) "its own tree, read from the template's old actions")
+        (is (not (contains? c :connection/actions)))
         (is (= (:template/params t) (:connection/params c)))
         (is (= {:template/id :conn/end-plate :template/name "End plate, 4 bolts"} (:connection/from-template c)))
         (is (not (contains? c :connection/template)))))
@@ -66,8 +71,8 @@
         {:keys [instructions errors]} (core/regenerate model [:b-2])
         b2 (:b-2 instructions)
         beam (part b2 :main)
-        plate (part b2 :plate-end)
-        bolts (part b2 :bolts-end)]
+        plate (part b2 :end/plate)
+        bolts (part b2 :end/bolts)]
     (is (empty? errors))
     (testing "beam cut back by the plate thickness behind column C-B2's face (8000 - 101.7)"
       (is (v/nearly= 7886.3 (get-in beam [:plane :origin 2])))
@@ -87,8 +92,8 @@
       (let [ys (sort (distinct (map #(Math/round (* 10 (get-in % [:frame :o 1]))) (:children bolts))))]
         (is (= [(Math/round (* 10 (- -152 101.8))) (Math/round (* 10 (+ -152 101.8)))] ys))))
     (testing "both ends get a plate"
-      (is (part b2 :plate-start))
-      (is (part b2 :bolts-start)))))
+      (is (part b2 :start/plate))
+      (is (part b2 :start/bolts)))))
 
 (deftest library-edits-change-no-assembly
   (let [{:keys [model]} (applied)
@@ -103,30 +108,30 @@
       (let [r (template/apply-template m' :b-2 (get-in m' [:templates :tpl/beam-end-plates]) "310UB40.4" (counter))
             conns (get-in r [:model :connections])]
         (is (= 20 (get-in conns [:conn-1 :connection/params :plate-t])))
-        (is (= [{:action/type :cut-to-face :action/face :auto}] (get-in conns [:conn-2 :connection/actions])))
+        (is (= square-cut-parts (get-in conns [:conn-2 :connection/parts])))
         (is (empty? (get-in r [:connections :remove])) "each end keeps its connection id")))))
 
 (deftest a-connection-uses-its-own-recipe
   (let [{:keys [model]} (applied)
         built #(:b-2 (:instructions (core/regenerate % [:b-2])))
         ids #(set (map :id (get-in % [:child :children])))]
-    (testing "its own actions: a square cut copy has no plate, whatever the library says"
+    (testing "its own parts: a square cut copy has no plate, whatever the library says"
       (let [m (-> model
-                  (assoc-in [:connections :conn-2 :connection/actions] [{:action/type :cut-to-face}])
+                  (assoc-in [:connections :conn-2 :connection/parts] square-cut-parts)
                   (assoc-in [:connections :conn-2 :connection/params] {:gap 10}))]
-        (is (contains? (ids (built model)) :plate-end))
-        (is (not (contains? (ids (built m)) :plate-end)))
-        (is (contains? (ids (built m)) :plate-start))))
+        (is (contains? (ids (built model)) :end/plate))
+        (is (not (contains? (ids (built m)) :end/plate)))
+        (is (contains? (ids (built m)) :start/plate))))
     (testing "its own parameters"
       (let [m (assoc-in model [:connections :conn-2 :connection/params :plate-t] 25)]
-        (is (= 25 (get-in (part (built m) :plate-end) [:part/size :t])))))
+        (is (= 25 (get-in (part (built m) :end/plate) [:part/size :t])))))
     (testing "a connection from before copies is read through its library template"
       (let [c (get-in fx/model [:connections :b-1-start])
             {:keys [instructions errors]} (core/regenerate fx/model [:b-1])]
         (is (not (contains? c :connection/actions)))
         (is (empty? errors))
         (is (= :slice (:op (part (:b-1 instructions) :main))))
-        (is (= {:connection/name nil :connection/actions [{:action/type :cut-to-face :action/face :auto}]
+        (is (= {:connection/name nil :connection/parts square-cut-parts
                 :connection/params {:gap 10}
                 :connection/from-template {:template/id :square-cut :template/name nil}}
                (assembly/own-recipe fx/model c)))))))
@@ -135,6 +140,7 @@
   (let [{:keys [model]} (applied)
         copy {:connection/name "Heavy plate" :connection/actions [{:action/type :end-plate}]
               :connection/params {:plate-t 30}}
+        tree-copy (assoc copy :connection/parts (prim/actions->parts [{:action/type :end-plate}] {:plate-t 30}))
         {m' :model :keys [changed]} (template/update-connection model :conn-2 copy)
         c (get-in m' [:connections :conn-2])]
     (is (= #{:b-2} changed))
@@ -148,8 +154,19 @@
       (let [c (get-in (template/update-connection fx/model :b-1-end {:connection/params {:gap 4}})
                       [:model :connections :b-1-end])]
         (is (not (contains? c :connection/template)))
-        (is (= [{:action/type :cut-to-face :action/face :auto}] (:connection/actions c)))
+        (is (= square-cut-parts (:connection/parts c)))
+        (is (not (contains? c :connection/actions)))
         (is (= {:gap 4} (:connection/params c)))))
+    (testing "a copy sent as an old action list is stored as its tree"
+      (let [c (get-in m' [:connections :conn-2])]
+        (is (= (:connection/parts tree-copy) (:connection/parts c)))
+        (is (not (contains? c :connection/actions)))))
+    (testing "a copy with a parts tree is stored as it is"
+      (let [tree [{:prim/id :cut :prim/type :cut :prim/place {:at :node :offset [0 0 50]}}]
+            c (get-in (template/update-connection model :conn-2 {:connection/parts tree})
+                      [:model :connections :conn-2])]
+        (is (= tree (:connection/parts c)))
+        (is (= "End plate, 4 bolts" (:connection/name c)) "what the copy doesn't give is kept")))
     (is (:error (template/update-connection model :nope copy)))))
 
 (deftest templates-keep-the-member-role
@@ -181,8 +198,7 @@
         (is (= :tpl/beam-end-plates (get-in (template/assembly-state (:model r) :b-2) [:assembly/from-template :template/id]))
             "the page says where the assembly came from")
         (testing "an end given a library template gets a copy of it, on the same connection"
-          (is (= [{:action/type :cut-to-face :action/face :auto}]
-                 (get-in r [:model :connections :conn-2 :connection/actions])))
+          (is (= square-cut-parts (get-in r [:model :connections :conn-2 :connection/parts])))
           (is (= :square-cut (get-in r [:model :connections :conn-2 :connection/from-template :template/id]))))
         (testing "the other end keeps its own copy"
           (is (= (get-in model [:connections :conn-1]) (get-in r [:model :connections :conn-1]))))))
@@ -205,16 +221,18 @@
       (is (= :subtract (:op col)))
       (is (= 4 (count (:tools col)))))
     (testing "each hole lines up with a bolt, through plate gap and flange"
-      (let [hole-axes (set (for [t (:tools col)]
-                             (let [f (world (:c-b2 instructions) (:frame t))]
-                               (mapv #(Math/round (double %)) (:o f)))))
-            bolt-starts (for [b (:children (part b2 :bolts-end))]
-                          (let [f (world b2 (:frame b))
-                                ;; the support cutter starts 10 inside the plate's support face,
-                                ;; the bolt at the plate's owner face: 12 - 10 = 2 further back
-                                o (v/v+ (:o f) (v/scale (:z f) 2))]
-                            (mapv #(Math/round (double %)) o)))]
-        (is (every? hole-axes bolt-starts))
+      (let [holes (for [t (:tools col)] (world (:c-b2 instructions) (:frame t)))
+            bolts (for [b (:children (part b2 :end/bolts))] (world b2 (:frame b)))
+            on-axis? (fn [hole bolt]
+                       (and (v/parallel? (:z hole) (:z bolt))
+                            (v/nearly-zero? (v/cross (v/v- (:o hole) (:o bolt)) (:z bolt)))))]
+        (is (every? (fn [b] (some #(on-axis? % b) holes)) bolts))
+        (testing "the cutter runs 10 past the plate's support face and 10 past the flange"
+          (let [bolt (first bolts)
+                hole (some #(when (on-axis? % bolt) %) holes)
+                ;; the bolt starts at the plate's outer face, 12 from its support face
+                along (v/dot (v/v- (:o hole) (:o bolt)) (:z bolt))]
+            (is (v/nearly= (+ 12 11.0 10) along 1e-6))))
         (is (v/nearly= (+ 10 0 11.0 10) (get-in (first (:tools col)) [:child :length])))))
     (testing "editing the beam regenerates the column it is bolted to"
       (is (contains? (model/affected model [:b-2]) :c-b2)))))

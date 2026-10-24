@@ -24,13 +24,14 @@
 
   An end condition names a library connection template (with optional
   parameter overrides), or is itself a copy ({:connection/name
-  :connection/actions :connection/params}), as an assembly's own ends are.
+  :connection/parts :connection/params}), as an assembly's own ends are.
 
   A connection template knows nothing about member roles: only the two ECSs
   it joins and how (cut, plate, fin plate...). So the same template serves a
   beam to column or a joist to beam, and applying a template never changes
   the member's role, which is set when the assembly is created."
   (:require [modeller.assembly :as assembly]
+            [modeller.prim :as prim]
             [modeller.node :as node]))
 
 (defn provenance
@@ -39,7 +40,7 @@
   (when t {:template/id (:template/id t) :template/name (:template/name t)}))
 
 (defn connection-copy
-  "The connection an end condition makes: its own name, actions and
+  "The connection an end condition makes: its own name, parts and
   parameters, and where they came from. A condition naming a library
   template is copied from it (its parameters with the condition's overrides
   on top); a condition that is already a copy is kept as it is. nil for no
@@ -47,27 +48,27 @@
   [templates condition]
   (cond
     (nil? condition) nil
-    (contains? condition :connection/actions) (select-keys condition assembly/recipe-keys)
+    (assembly/copy? condition) (assembly/normalise-copy condition)
     :else (when-let [t (get templates (:connection/template condition))]
             (when (= :connection (:template/kind t :connection))
               {:connection/name (:template/name t)
-               :connection/actions (vec (:template/actions t))
+               :connection/parts (prim/template-parts t)
                :connection/params (merge (:template/params t) (:connection/params condition))
                :connection/from-template (provenance t)}))))
 
 (defn copy->template
   "A connection's copy as a connection template draft (no id), to edit in
   the connection editor or save to the library."
-  [{:connection/keys [name actions params]}]
+  [{:connection/keys [name params] :as copy}]
   {:template/kind :connection :template/name name
-   :template/actions (vec actions) :template/params (or params {})})
+   :template/parts (prim/connection-parts copy) :template/params (or params {})})
 
 (defn template->copy
   "A connection template draft back as a connection's copy, `from` its
   provenance."
   [t from]
   (cond-> {:connection/name (:template/name t)
-           :connection/actions (vec (:template/actions t))
+           :connection/parts (prim/template-parts t)
            :connection/params (or (:template/params t) {})}
     from (assoc :connection/from-template from)))
 
@@ -146,15 +147,17 @@
                           {:warning/type :template/end-not-on-xline :xline/id xline-id :end end}))})))))
 
 (defn update-connection
-  "Replace one connection's own copy: name, actions and parameters, and its
+  "Replace one connection's own copy: name, parts and parameters, and its
   provenance when `copy` gives one. A connection from before copies (a
-  library id and overrides) becomes a copy. {:model m' :changed #{owner}} or
+  library id and overrides), or holding an old action list, becomes a copy
+  with a tree of parts. {:model m' :changed #{owner}} or
   {:error e}."
   [m id copy]
   (if-let [c (get-in m [:connections id])]
-    (let [recipe (merge (assembly/own-recipe m c) (select-keys copy assembly/recipe-keys))]
+    (let [copy (cond-> copy (assembly/copy? copy) (assoc :connection/parts (prim/connection-parts copy)))
+          recipe (merge (assembly/own-recipe m c) (select-keys copy assembly/recipe-keys))]
       {:model (assoc-in m [:connections id]
-                        (merge (apply dissoc c :connection/template assembly/recipe-keys) recipe))
+                        (merge (apply dissoc c :connection/template :connection/actions assembly/recipe-keys) recipe))
        :changed #{(:connection/owner c)}})
     {:error {:error/type :connection/unknown :connection/id id}}))
 

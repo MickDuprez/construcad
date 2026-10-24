@@ -4,6 +4,14 @@
 
 (def node-ref [:map {:closed false}])
 
+(def prim
+  "One primitive of a connection's tree; the core checks the rest
+  (modeller.prim/tree-errors)."
+  [:map {:closed false}
+   [:prim/id :keyword]
+   [:prim/type :keyword]
+   [:prim/children {:optional true} [:sequential :map]]])
+
 (def schema
   {:project [:map {:closed false}
              [:xt/id :uuid]
@@ -39,9 +47,11 @@
                 [:connection/owner :uuid]
                 [:connection/end [:enum :start :end]]
                 [:connection/refs [:vector :uuid]]
-                ;; its own copy of the recipe; connections saved before copies
+                ;; its own copy of the recipe, a tree of prims (modeller.prim);
+                ;; older connections hold a flat action list, read as a tree, or
                 ;; name a library template instead
                 [:connection/name {:optional true} :string]
+                [:connection/parts {:optional true} [:vector prim]]
                 [:connection/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]
                 [:connection/template {:optional true} :uuid]]
    :template [:map {:closed false}
@@ -49,6 +59,7 @@
               [:template/project :uuid]
               [:template/kind [:enum :connection :assembly]]
               [:template/name :string]
+              [:template/parts {:optional true} [:vector prim]]
               [:template/actions {:optional true} [:vector [:map {:closed false} [:action/type :keyword]]]]
               ;; a small PNG preview (data URL), captured when it is saved
               [:template/thumbnail {:optional true} :string]]})

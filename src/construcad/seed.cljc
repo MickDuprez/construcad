@@ -13,13 +13,25 @@
   {square-cut {:template/id square-cut :template/kind :connection
                :template/name "Square cut to face"
                :template/params {:gap 10}
-               :template/actions [{:action/type :cut-to-face :action/face :auto}]}
+               :template/parts [{:prim/id :cut :prim/type :cut :prim/name "Cut to face"
+                                 :prim/place {:at :support-face :offset [0 0 :gap]}}]}
    end-plate {:template/id end-plate :template/kind :connection
               :template/name "End plate, 4 bolts"
               :template/params {:gap 0 :plate-t 12 :plate-w "bf" :plate-h "(+ d 20)"
                                 :rows 2 :cols 2 :gauge 90 :pitch "(- d (* 2 tf) 80)"
                                 :bolt-dia 20}
-              :template/actions [{:action/type :end-plate} {:action/type :bolt-group}]}
+              ;; a cut behind the plate, the plate on the support face, and
+              ;; holes through the plate and the support with bolts in them
+              :template/parts [{:prim/id :cut :prim/type :cut :prim/name "Cut behind the plate"
+                                :prim/place {:at :support-face :offset [0 0 "(+ gap plate-t)"]}}
+                               {:prim/id :plate :prim/type :plate :prim/name "End plate"
+                                :prim/place {:at :support-face :offset [0 0 :gap]}
+                                :prim/params {:t :plate-t :shape {:rect [:plate-w :plate-h]}}
+                                :prim/children
+                                [{:prim/id :bolts :prim/type :hole-group :prim/name "Bolts"
+                                  :prim/place {:at :parent}
+                                  :prim/params {:rows :rows :cols :cols :gauge :gauge :pitch :pitch
+                                                :bolt-dia :bolt-dia :through [:parent :support] :bolts? true}}]}]}
    beam-cut {:template/id beam-cut :template/kind :assembly
              :template/name "Beam, square cut both ends" :template/role :beam
              :template/main {:part/insert :top-centre}

@@ -98,9 +98,13 @@
                   nil))]
     (filter #(and (keyword? (:id %)) (not= :xline (:op %))) (:children group))))
 
-(defn- end-of-part [id]
-  (cond (str/ends-with? (name id) "-start") :start
-        (str/ends-with? (name id) "-end") :end))
+(defn- end-of-part
+  "The end a connection's part belongs to: its id's namespace (:end/plate),
+  or an older id's suffix (:plate-end)."
+  [id]
+  (or (#{:start :end} (some-> (namespace id) keyword))
+      (cond (str/ends-with? (name id) "-start") :start
+            (str/ends-with? (name id) "-end") :end)))
 
 (defn parts
   "The parts list of one assembly from its instruction: the member's own

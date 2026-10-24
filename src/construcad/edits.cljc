@@ -15,18 +15,23 @@
     {:edit/type :assembly/update    :state {...}}      ; one assembly, from the assembly page
                                                        ; (shape: modeller.template/assembly-state)
     {:edit/type :connection/update  :connection/id id :xline/id owner
-     :connection {:connection/name .. :connection/actions [..] :connection/params {..}}}
-                                                       ; one connection's own copy
+     :connection {:connection/name .. :connection/parts [..] :connection/params {..}}}
+                                                       ; one connection's own copy (a tree
+                                                       ; of prims, modeller.prim; an old
+                                                       ; :connection/actions list is read as one)
 
   `plan` returns {:model m' :changed #{xline ids} :writes [record ...]} or
   {:error e}. A record is [:assembly id], [:assembly/create id], [:grid],
   [:level id], [:connection id], [:connection/delete id] or [:template id].
   New ids (connections, templates) come from the edit's :new-id function,
   which the store supplies; a browser never chooses an id."
-  (:require [modeller.core :as core]
+  (:require [modeller.assembly :as assembly]
+            [modeller.connection :as connection]
+            [modeller.core :as core]
             [modeller.grid :as grid]
             [modeller.model :as model]
             [modeller.node :as node]
+            [modeller.prim :as prim]
             [modeller.template :as template]))
 
 (defn- error [type & {:as data}] {:error (assoc data :error/type type)})
@@ -196,9 +201,11 @@
 
 ;; --- templates ---------------------------------------------------------------
 
-(def known-actions
-  "Connection actions the core implements (modeller.assembly/apply-action)."
-  #{:cut-to-face :end-plate :bolt-group})
+(defn- parts-error
+  "Why a tree of prims can't be saved (modeller.prim/tree-errors against the
+  prim types the core implements, modeller.connection/apply-prim), or nil."
+  [parts]
+  (first (prim/tree-errors parts (connection/known-types))))
 
 (defn- template-result->plan
   "A template application's result as a plan: the assemblies it rewrote and
@@ -238,21 +245,19 @@
 
 (defn- copy-error
   "Why a connection's own copy can't be saved, or nil."
-  [{:connection/keys [name actions params]}]
+  [{:connection/keys [name params] :as copy}]
   (cond
     (not (and (string? name) (seq name))) {:reason :no-name}
-    (not (and (sequential? actions) (seq actions))) {:reason :no-actions}
-    (not-every? (comp known-actions :action/type) actions) {:reason :unknown-action}
-    (not (or (nil? params) (map? params))) {:reason :bad-params}))
+    (not (or (nil? params) (map? params))) {:reason :bad-params}
+    :else (parts-error (prim/connection-parts copy))))
 
 (defn- condition-ok?
-  "An end condition: none, a copy of known actions, or a library
+  "An end condition: none, a copy of known prims, or a library
   connection template to copy."
   [m c]
   (cond
     (nil? c) true
-    (contains? c :connection/actions) (and (sequential? (:connection/actions c))
-                                           (every? (comp known-actions :action/type) (:connection/actions c)))
+    (assembly/copy? c) (nil? (parts-error (prim/connection-parts c)))
     :else (= :connection (get-in m [:templates (:connection/template c) :template/kind]))))
 
 (defmethod plan* :assembly/update [m {state :state new-id :new-id}]
@@ -265,11 +270,9 @@
       :else (let [r (template/update-assembly m state (or new-id random-uuid))]
               (if (:error r) {:error (:error r)} (template-result->plan r []))))))
 
-(defn- template-error [m {:template/keys [kind actions] :as t}]
+(defn- template-error [m {:template/keys [kind] :as t}]
   (case kind
-    :connection (cond
-                  (not (seq actions)) {:reason :no-actions}
-                  (not-every? (comp known-actions :action/type) actions) {:reason :unknown-action})
+    :connection (parts-error (prim/template-parts t))
     :assembly (when-not (every? #(condition-ok? m (get t %)) [:template/start :template/end])
                 {:reason :unknown-connection-template})
     {:reason :bad-kind}))
@@ -287,7 +290,11 @@
 (defmethod plan* :template/save [m {t :template new-id :new-id}]
   (let [new-id (or new-id random-uuid)
         given (:template/id t)
-        t (cond-> t (and (map? t) (nil? given)) (assoc :template/id (new-id)))
+        t (cond-> t
+            (and (map? t) (nil? given)) (assoc :template/id (new-id))
+            ;; an old action list is stored as its tree
+            (and (map? t) (contains? t :template/actions))
+            (-> (assoc :template/parts (prim/template-parts t)) (dissoc :template/actions)))
         id (:template/id t)]
     (if-let [e (or (when-not (map? t) {:reason :not-a-map})
                    ;; an id the browser sends must be one of this project's templates
